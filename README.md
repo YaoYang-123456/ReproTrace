@@ -25,7 +25,10 @@ reprotrace run examples/tiny/reprotrace.yaml
 
 The command prints the evidence directory. It contains the resolved manifest,
 source and environment snapshots, input and artifact hashes, command records,
-raw logs, extracted metrics, verification result, and a Markdown report.
+raw logs, extracted metrics, verification result, and a Markdown report. For a
+Git worktree, `source.patch` preserves the exact binary-capable diff bytes and
+`source.status` preserves the NUL-delimited porcelain status; `source.json`
+records their formats, sizes, SHA-256 hashes, and replay coverage.
 
 Run the remaining commands with that directory:
 
@@ -50,6 +53,12 @@ repository. ReproTrace checks required inputs during this preflight.
 Relative `run.output_root` paths are resolved from the manifest directory, not
 from `project.root`. ReproTrace rejects an unignored evidence output path inside
 the audited Git worktree so its own bundle cannot make the recorded source dirty.
+The isolation check reuses the worktree root captured before bundle creation and
+fails closed if Git cannot determine whether an in-worktree output is ignored.
+Git output is captured as bytes rather than decoded with the host locale, so
+UTF-8, legacy-encoded text, and binary changes are recorded consistently across
+platforms. The patch covers tracked changes relative to `HEAD`; untracked paths
+appear in `source.status`, but their contents are intentionally not copied.
 
 ## Exit codes
 

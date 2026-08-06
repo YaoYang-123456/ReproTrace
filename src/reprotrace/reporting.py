@@ -7,7 +7,7 @@ from pathlib import Path
 from typing import Any
 
 from .errors import ConfigError
-from .io import read_json
+from .io import read_json, read_source_record
 
 
 def _value(value: Any) -> str:
@@ -28,7 +28,7 @@ def generate_report(run_dir: str | Path) -> Path:
         if not path.is_file():
             missing.append(path.name)
         else:
-            evidence[name] = read_json(path)
+            evidence[name] = read_source_record(path) if name == "source" else read_json(path)
     if missing:
         raise ConfigError(f"cannot report invalid evidence bundle; missing: {', '.join(missing)}")
 
@@ -53,18 +53,49 @@ def generate_report(run_dir: str | Path) -> Path:
         "",
         "## Source and environment",
         "",
+        f"- Source available: {_value(source.get('available'))}",
+        f"- Source unavailable reason: {_value(source.get('reason'))}",
         f"- Commit: `{_value(source.get('commit'))}`",
         f"- Branch: `{_value(source.get('branch'))}`",
         f"- Remote: {_value(source.get('remote'))}",
         f"- Dirty: {_value(source.get('dirty'))}",
         f"- Python: `{evidence['environment'].get('python')}`",
         f"- Platform: `{evidence['environment'].get('platform')}`",
-        "",
-        "## Commands",
-        "",
-        "| Step | Status | Exit | Elapsed (s) | Command |",
-        "|---|---:|---:|---:|---|",
     ]
+    git_patch = source.get("git_patch")
+    git_status = source.get("git_status")
+    if source.get("schema_version") == 1 and source.get("available"):
+        if not isinstance(git_patch, dict) or not isinstance(git_status, dict):
+            raise ConfigError("cannot report invalid source.json; Git patch/status metadata must be objects")
+        git_metadata = source["git"]
+        coverage = source["coverage"]
+        summary = source["summary"]
+        lines.extend(
+            [
+                f"- Git: `{git_metadata.get('version')}`",
+                f"- Source replay coverage: `{coverage.get('replay', 'partial')}` "
+                "(tracked changes only)",
+                f"- Source patch: `{git_patch.get('path')}`; format `{git_patch.get('format')}`; "
+                f"{git_patch.get('size_bytes')} bytes; SHA-256 `{git_patch.get('sha256')}`",
+                f"- Source status: `{git_status.get('path')}`; format `{git_status.get('format')}`; "
+                f"{git_status.get('size_bytes')} bytes; SHA-256 `{git_status.get('sha256')}`",
+            ]
+        )
+        untracked_count = summary.get("untracked_file_count", 0)
+        if untracked_count:
+            lines.append(
+                f"- **WARNING:** {untracked_count} untracked path(s) were recorded by name/status only; "
+                "their contents are absent, so this bundle cannot fully replay the source worktree."
+            )
+    lines.extend(
+        [
+            "",
+            "## Commands",
+            "",
+            "| Step | Status | Exit | Elapsed (s) | Command |",
+            "|---|---:|---:|---:|---|",
+        ]
+    )
     for command in evidence["commands"]:
         argv = " ".join(shlex.quote(item) for item in command.get("argv", []))
         escaped_argv = argv.replace("|", "\\|")

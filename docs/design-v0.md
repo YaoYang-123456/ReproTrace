@@ -31,6 +31,46 @@ creating a bundle, ReproTrace captures the source state and rejects an unignored
 output path inside the audited Git worktree. This keeps recorder output separate
 from the source state it is meant to describe.
 
+## Source evidence format
+
+Git subprocess output is captured as bytes without locale-dependent decoding.
+For repositories with a valid `HEAD`, each new bundle contains two source files:
+
+- `source.status`: exact `git status --porcelain=v1 -z` bytes, including raw,
+  NUL-delimited tracked and untracked path status;
+- `source.patch`: exact deterministic `git diff --binary --full-index` bytes for
+  staged and unstaged tracked changes relative to `HEAD`.
+
+`source.json` schema 1 records the Git version, fixed generation arguments,
+the manifest project root and resolved Git worktree root, file sizes, SHA-256
+hashes, and explicit coverage metadata. All Git state commands run from that
+worktree root so a manifest rooted in a subdirectory still captures repository-
+wide tracked and untracked status. Output isolation reuses that captured root;
+it does not rediscover the repository after the snapshot, and an indeterminate
+`check-ignore` result aborts before run-directory creation. The source files are
+captured before bundle creation, then written atomically before `source.json`.
+Verification validates their bundle-relative paths, regular-file type, size,
+and hash before treating them as intact evidence. Verify, diff, and report share
+one source-record parser, reject malformed or unknown schemas consistently, and
+continue to read legacy records without requiring the additional files.
+
+Replay coverage is intentionally partial: the patch can reconstruct tracked
+changes from the recorded base commit, while untracked names are present only in
+the status evidence. Untracked and ignored contents and dirty submodule worktree
+contents are not copied. Reports must not describe a bundle as a complete source
+archive.
+
+The fixed diff arguments neutralize context, inter-hunk context, algorithm,
+rename, color, prefix, external-diff, textconv, blank-empty suppression, file
+ordering, and submodule-display preferences. `diff.orderFile` is overridden with
+the empty `/dev/null` order file understood by Git on Windows, Linux, and macOS;
+the cross-platform test matrix verifies the resulting bytes. Repository
+attributes and Git settings that define the effective worktree—such as EOL
+normalization, file modes, symlink behavior, case handling, and text/binary
+classification—remain in effect intentionally. Git version and argv are recorded
+because equivalent logical changes are not guaranteed to serialize identically
+across different Git versions or effective worktree configurations.
+
 ## v0 boundaries
 
 Supported now:
@@ -40,7 +80,8 @@ Supported now:
 - declared file inputs and artifacts;
 - CSV and log-regex metrics;
 - one seed per evidence bundle;
-- source, environment, command, log, hash, metric, and report capture.
+- source, environment, command, log, hash, metric, and report capture;
+- locale-independent raw Git status and binary-capable patch evidence.
 
 Deferred:
 

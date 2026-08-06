@@ -19,7 +19,7 @@ from .capture import (
     validate_output_root,
 )
 from .errors import ConfigError
-from .io import utc_now, write_json, write_yaml
+from .io import utc_now, write_bytes_atomic, write_json, write_json_atomic, write_yaml
 from .manifest import (
     LoadedManifest,
     load_manifest,
@@ -162,12 +162,16 @@ def run_manifest(
     run_id = _new_run_id()
     run_dir = manifest.output_root / run_id
     context = runtime_context(manifest, run_dir, chosen_seed)
-    source = capture_source(manifest)
-    validate_output_root(manifest)
+    source_capture = capture_source(manifest)
+    validate_output_root(manifest, source_capture)
     inputs = capture_inputs(manifest, context)
     run_dir.mkdir(parents=True, exist_ok=False)
     (run_dir / "logs").mkdir()
     (run_dir / "artifacts").mkdir()
+    for relative_path in ("source.status", "source.patch"):
+        if relative_path in source_capture.files:
+            write_bytes_atomic(run_dir / relative_path, source_capture.files[relative_path])
+    write_json_atomic(run_dir / "source.json", source_capture.record)
     run_record: dict[str, Any] = {
         "schema_version": 0,
         "run_id": run_id,
@@ -183,7 +187,6 @@ def run_manifest(
     }
     write_json(run_dir / "run.json", run_record)
     write_yaml(run_dir / "manifest.resolved.yaml", redacted_manifest(manifest.data))
-    write_json(run_dir / "source.json", source)
     write_json(run_dir / "environment.json", capture_environment())
     write_json(run_dir / "inputs.json", inputs)
 

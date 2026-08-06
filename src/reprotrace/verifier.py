@@ -3,11 +3,13 @@
 from __future__ import annotations
 
 import math
-from pathlib import Path
+import os
+import stat
+from pathlib import Path, PurePosixPath, PureWindowsPath
 from typing import Any
 
 from .errors import ConfigError
-from .io import comparison_key, fingerprint, read_json, utc_now, write_json
+from .io import comparison_key, fingerprint, read_json, read_source_record, sha256_file, utc_now, write_json
 
 
 def _check_fingerprint(record: dict[str, Any], check_id: str, category: str) -> dict[str, Any]:
@@ -20,6 +22,63 @@ def _check_fingerprint(record: dict[str, Any], check_id: str, category: str) -> 
         "recorded": {key: record.get(key) for key in ("exists", "kind", "size_bytes", "sha256")},
         "current": {key: current.get(key) for key in ("exists", "kind", "size_bytes", "sha256")},
         "path": record["path"],
+    }
+
+
+def _validated_source_path(directory: Path, value: Any, label: str) -> Path:
+    if not isinstance(value, str) or not value:
+        raise ConfigError(f"invalid {label} path in source.json; expected a non-empty relative path")
+    posix_path = PurePosixPath(value)
+    windows_path = PureWindowsPath(value)
+    if posix_path.is_absolute() or windows_path.is_absolute() or windows_path.drive:
+        raise ConfigError(f"invalid {label} path in source.json; absolute paths are not allowed: {value!r}")
+    if ".." in posix_path.parts or ".." in windows_path.parts:
+        raise ConfigError(f"invalid {label} path in source.json; parent traversal is not allowed: {value!r}")
+    try:
+        bundle_root = directory.resolve(strict=True)
+        candidate = directory / Path(value)
+        resolved = candidate.resolve(strict=False)
+        resolved.relative_to(bundle_root)
+    except (OSError, RuntimeError, ValueError) as exc:
+        raise ConfigError(f"invalid {label} path in source.json; path escapes the evidence bundle: {value!r}") from exc
+    if candidate.is_symlink():
+        raise ConfigError(f"invalid {label} file in evidence bundle; expected a regular file: {candidate}")
+    return candidate
+
+
+def _check_source_file(directory: Path, metadata: Any, check_id: str, label: str) -> dict[str, Any]:
+    if not isinstance(metadata, dict):
+        raise ConfigError(f"invalid source.json; {label} metadata must be an object")
+    candidate = _validated_source_path(directory, metadata.get("path"), label)
+    recorded = {key: metadata.get(key) for key in ("size_bytes", "sha256")}
+    if not candidate.exists():
+        return {
+            "id": check_id,
+            "category": "source",
+            "passed": False,
+            "recorded": recorded,
+            "current": {"exists": False, "size_bytes": None, "sha256": None},
+            "path": metadata.get("path"),
+            "reason": f"recorded {label} file is missing",
+        }
+    try:
+        file_status = os.stat(candidate, follow_symlinks=False)
+    except OSError as exc:
+        raise ConfigError(f"cannot inspect recorded {label} file {candidate}: {exc}") from exc
+    if not stat.S_ISREG(file_status.st_mode):
+        raise ConfigError(f"invalid {label} file in evidence bundle; expected a regular file: {candidate}")
+    current = {
+        "exists": True,
+        "size_bytes": file_status.st_size,
+        "sha256": sha256_file(candidate),
+    }
+    return {
+        "id": check_id,
+        "category": "source",
+        "passed": recorded == {"size_bytes": current["size_bytes"], "sha256": current["sha256"]},
+        "recorded": recorded,
+        "current": current,
+        "path": metadata.get("path"),
     }
 
 
@@ -40,12 +99,21 @@ def verify_bundle(run_dir: str | Path, *, write: bool = True) -> dict[str, Any]:
         raise ConfigError(f"invalid evidence bundle {directory}; missing: {', '.join(missing)}")
 
     run = read_json(directory / "run.json")
-    source = read_json(directory / "source.json")
+    source = read_source_record(directory / "source.json")
     inputs = read_json(directory / "inputs.json")
     commands = read_json(directory / "commands.json")
     artifacts = read_json(directory / "artifacts.json")
     metrics = read_json(directory / "metrics.json")
     checks: list[dict[str, Any]] = []
+
+    source_schema = source.get("schema_version", 0)
+    if source_schema == 1 and source.get("available") is True:
+        checks.append(
+            _check_source_file(directory, source.get("git_status"), "source:git_status", "Git status evidence")
+        )
+        checks.append(
+            _check_source_file(directory, source.get("git_patch"), "source:git_patch", "Git patch evidence")
+        )
 
     expected_ref = source.get("expected_ref")
     if expected_ref:
