@@ -1,0 +1,51 @@
+schema_version: 0
+
+project:
+  name: peft-vit-cifar100-lora
+  root: .
+  repo: https://github.com/rezaakb/peft-vit.git
+  ref: 5095e75ef45018baef7ccf935ba6095b6d030d9b
+  allow_dirty: false
+
+claim:
+  id: peft-vit-cifar100-lora-r8-transfer
+  source: https://arxiv.org/abs/2404.17245
+  locator: Table 1 / LoRA r=8 / CIFAR-100
+  protocol: approximate
+
+inputs:
+  - id: training-config
+    kind: config
+    path: configs/lora/cifar100-r8-lr-0.05.yaml
+    required: true
+  - id: cifar100
+    kind: dataset
+    path: data
+    required: false
+
+run:
+  output_root: .reprotrace/runs
+  seed: 42
+  steps:
+    - id: train
+      argv:
+        - "{python}"
+        - main.py
+        - fit
+        - --config
+        - configs/lora/cifar100-r8-lr-0.05.yaml
+      timeout_seconds: 21600
+      artifacts:
+        - output/**/metrics.csv
+        - output/**/config.yaml
+        - output/**/checkpoints/*.ckpt
+
+metrics:
+  - id: transfer_top1
+    extractor: csv
+    path: output/**/metrics.csv
+    column: val_acc
+    select: max
+    expected: 0.8827
+    atol: 0.01
+    rtol: 0.0

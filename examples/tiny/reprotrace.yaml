@@ -1,0 +1,48 @@
+schema_version: 0
+
+project:
+  name: tiny-mean
+  root: .
+
+claim:
+  id: tiny-mean-score
+  source: self-contained-fixture
+  locator: deterministic arithmetic mean
+  protocol: strict
+
+inputs:
+  - id: numbers
+    kind: dataset
+    path: input.txt
+    required: true
+
+run:
+  output_root: ../../.reprotrace/runs
+  seed: 42
+  steps:
+    - id: calculate
+      argv:
+        - "{python}"
+        - experiment.py
+        - --input
+        - input.txt
+        - --output
+        - "{run_dir}/artifacts/metrics.csv"
+        - --metadata
+        - "{run_dir}/artifacts/metadata.json"
+        - --seed
+        - "{seed}"
+      timeout_seconds: 30
+      artifacts:
+        - "{run_dir}/artifacts/metrics.csv"
+        - "{run_dir}/artifacts/metadata.json"
+
+metrics:
+  - id: mean_score
+    extractor: csv
+    path: "{run_dir}/artifacts/metrics.csv"
+    column: score
+    select: last
+    expected: 3.0
+    atol: 0.0
+    rtol: 0.0
