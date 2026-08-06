@@ -6,7 +6,7 @@ from pathlib import Path
 from typing import Any
 
 from .errors import ConfigError
-from .io import read_json
+from .io import read_json, read_source_record
 
 
 def _load(directory: Path, name: str) -> Any:
@@ -29,11 +29,28 @@ def _artifact_hashes(declarations: list[dict[str, Any]]) -> dict[str, str | None
     return result
 
 
+def _source_patch_hash(source: dict[str, Any]) -> str | None:
+    if not source.get("dirty"):
+        return None
+    if "diff_sha256" in source:
+        return source.get("diff_sha256")
+    patch = source.get("git_patch")
+    return patch.get("sha256") if isinstance(patch, dict) and patch.get("size_bytes") else None
+
+
+def _source_status_hash(source: dict[str, Any]) -> str | None:
+    if not source.get("dirty"):
+        return None
+    status = source.get("git_status")
+    return status.get("sha256") if isinstance(status, dict) else None
+
+
 def compare_bundles(left: str | Path, right: str | Path) -> dict[str, Any]:
     left_dir = Path(left).expanduser().resolve()
     right_dir = Path(right).expanduser().resolve()
     left_run, right_run = _load(left_dir, "run"), _load(right_dir, "run")
-    left_source, right_source = _load(left_dir, "source"), _load(right_dir, "source")
+    left_source = read_source_record(left_dir / "source.json")
+    right_source = read_source_record(right_dir / "source.json")
     left_environment, right_environment = _load(left_dir, "environment"), _load(right_dir, "environment")
     left_inputs, right_inputs = _by_id(_load(left_dir, "inputs")), _by_id(_load(right_dir, "inputs"))
     left_metrics, right_metrics = _by_id(_load(left_dir, "metrics")), _by_id(_load(right_dir, "metrics"))
@@ -42,6 +59,8 @@ def compare_bundles(left: str | Path, right: str | Path) -> dict[str, Any]:
         "seed": (left_run.get("seed"), right_run.get("seed")),
         "source.commit": (left_source.get("commit"), right_source.get("commit")),
         "source.dirty": (left_source.get("dirty"), right_source.get("dirty")),
+        "source.diff_sha256": (_source_patch_hash(left_source), _source_patch_hash(right_source)),
+        "source.status_sha256": (_source_status_hash(left_source), _source_status_hash(right_source)),
         "environment.python": (left_environment.get("python"), right_environment.get("python")),
         "environment.platform": (left_environment.get("platform"), right_environment.get("platform")),
         "environment.torch": (left_environment.get("torch"), right_environment.get("torch")),

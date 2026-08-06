@@ -7,7 +7,7 @@
 - 仓库：`https://github.com/YaoYang-123456/ReproTrace`
 - 本地工作目录：`E:\codex-work\ReproTrace-local`
 - 分支：`main`
-- HEAD：`ecdbae6a5ebd58096a52551439256eacaeffb8d0`
+- HEAD：`531d65653690ee1342fa5b87745dc5b605f90b43`
 - 本地 `main` 与 `origin/main`：当前一致
 - 本阶段开始时工作树：干净
 
@@ -30,7 +30,7 @@ source -> environment -> inputs -> commands -> logs -> artifacts -> metrics -> v
 
 ## 测试状态
 
-当前测试套件包含 14 项测试：原有 10 项测试、3 项针对证据输出隔离和 source 快照顺序的回归测试，以及 1 项针对步骤环境变量占位符展开的回归测试。覆盖：
+当前测试套件包含原有功能测试和 C4 source evidence 回归测试。覆盖：
 
 - manifest 基本校验、shell 字符串拒绝和路径穿越拒绝；
 - tiny CPU 实验端到端运行；
@@ -40,6 +40,25 @@ source -> environment -> inputs -> commands -> logs -> artifacts -> metrics -> v
 - seed 和产物变化的 diff；
 - CSV 与日志正则指标提取；
 - source ref 预检失败。
+
+## C4 source evidence
+
+C3 验证期间确认：Windows 默认 cp1252 Python 环境在解码包含中文 UTF-8
+修改的 `git diff --binary` 输出时会失败。C4 将所有 Git stdout/stderr 改为
+bytes 捕获，不再依赖当前 locale，并新增：
+
+- 原子写入的 `source.patch`：保存 tracked changes 的原始、可包含二进制
+  delta 的 Git patch；
+- 原子写入的 `source.status`：保存 NUL 分隔的 porcelain v1 状态和原始文件名；
+- `source.json` schema 1：记录 Git 版本、固定生成参数、格式、大小、SHA-256
+  和明确的 partial replay coverage；
+- verify 对 source evidence 的 bundle-relative 路径、路径逃逸、普通文件类型、
+  大小和 SHA-256 进行检查；
+- legacy source bundle 继续按 schema 0 读取，无需迁移。
+
+未跟踪文件只记录名称和状态，不复制内容；ignored 文件和 dirty submodule
+工作树内容也不捕获，因此 bundle 不代表完整源码归档。CI 覆盖 Ubuntu、
+Windows 和 macOS。
 
 ## 固定调研提交
 
@@ -103,6 +122,48 @@ python -m venv .venv
 这些命令均在已激活的仓库内 `.venv` 中执行；全局 Python 未用于安装项目依赖。
 
 当前阶段未启动 GPU，也未启动 PEFT-ViT 训练。
+
+## C4 Windows 验证
+
+在显式使用 `python -X utf8=0`、`locale.getencoding()=cp1252` 的环境下完成：
+
+- 完整测试：`40 passed, 2 skipped`；两个 skip 是本机无普通 symlink 创建权限，
+  Windows junction 逃逸测试已实际通过；
+- tiny CPU 端到端运行：`verification.status=passed`；
+- dirty source 证据：`source.json.schema_version=1`，`source.patch` 和
+  `source.status` 的大小与 SHA-256 复核通过；
+- `verify` 中 `source:git_patch` 与 `source:git_status` 均通过；
+- 全过程未设置 `PYTHONUTF8=1`，未再出现 cp1252 `UnicodeDecodeError`。
+
+## C4.1 审查修正
+
+C4 最终只读审查发现的四项问题已按最小范围修正：
+
+- source capture 在内存中携带已确认的规范化 worktree root，output isolation
+  不再二次执行 `rev-parse --show-toplevel`；`check-ignore` 仅接受退出码 0/1，
+  其他错误全部在创建 evidence 目录前 fail closed；
+- 首个 Git 探测失败时检查当前目录及祖先的 `.git` 文件或目录，区分普通
+  non-Git 目录与已有 Git marker 的操作错误，并保留 bytes stderr 的非权威摘要；
+- verify、diff、report 共用 source record 解析入口，统一接受 legacy schema 0
+  和 schema 1，并以 `ConfigError` 拒绝未知版本与畸形嵌套对象；
+- patch 命令固定 `--inter-hunk-context=0`，以命令级配置关闭
+  `diff.suppressBlankEmpty`，并以 Git 跨平台识别的空 `/dev/null` order file
+  中和 `diff.orderFile`；`.gitattributes`、EOL 等工作树语义配置仍保留。
+
+C4.1 本地验证结果：
+
+- source 专项：`56 passed, 2 skipped`；
+- 默认编码完整测试：`70 passed, 2 skipped`；
+- `python -X utf8=0`、cp1252 完整测试：`70 passed, 2 skipped`；
+- 两个 skip 均因当前 Windows 用户无普通 symlink 创建权限，Windows junction
+  逃逸测试实际执行并通过；
+- 注入 `diff.orderFile`、`diff.interHunkContext` 和
+  `diff.suppressBlankEmpty` 后，捕获的 patch bytes 与无注入基线完全一致；
+- 默认编码与 cp1252 tiny CPU 均为 `verification.status=passed`，随后独立执行
+  verify/report 成功，`source:git_patch` 与 `source:git_status` 检查均通过。
+
+Windows 本地已验证 Git 接受 `/dev/null` 作为空 order file；Linux 与 macOS
+由新增的同一生产路径回归测试在 GitHub Actions matrix 中继续确认。
 
 ## 下一步
 

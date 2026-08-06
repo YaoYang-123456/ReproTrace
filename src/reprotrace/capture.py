@@ -3,71 +3,297 @@
 from __future__ import annotations
 
 import glob
-import hashlib
 import importlib.metadata
 import os
 import platform
+import stat
 import subprocess
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Mapping
 
 from .errors import ConfigError
-from .io import fingerprint
+from .io import fingerprint, sha256_bytes
 from .manifest import LoadedManifest, substitute
 
 
-def _git(root: Path, *args: str) -> tuple[int, str]:
+@dataclass(frozen=True)
+class GitResult:
+    returncode: int
+    stdout: bytes
+    stderr: bytes
+    error: str | None = None
+
+
+@dataclass(frozen=True)
+class SourceCapture:
+    record: dict[str, Any]
+    files: dict[str, bytes]
+    worktree_root: Path | None
+
+
+def _git_bytes(root: Path, *args: str) -> GitResult:
+    environment = os.environ.copy()
+    environment["GIT_OPTIONAL_LOCKS"] = "0"
     try:
         process = subprocess.run(
             ["git", "-C", str(root), *args],
             check=False,
             capture_output=True,
-            text=True,
+            text=False,
             timeout=15,
+            env=environment,
         )
-    except (OSError, subprocess.TimeoutExpired):
-        return 127, ""
-    return process.returncode, process.stdout.strip()
+    except FileNotFoundError:
+        return GitResult(127, b"", b"", "git_unavailable")
+    except OSError as exc:
+        return GitResult(127, b"", b"", f"launch_error:{type(exc).__name__}")
+    except subprocess.TimeoutExpired as exc:
+        stdout = exc.stdout if isinstance(exc.stdout, bytes) else b""
+        stderr = exc.stderr if isinstance(exc.stderr, bytes) else b""
+        return GitResult(124, stdout, stderr, "timeout")
+    return GitResult(process.returncode, process.stdout, process.stderr)
 
 
-def capture_source(manifest: LoadedManifest) -> dict[str, Any]:
+def _display_bytes(value: bytes) -> str:
+    return value.rstrip(b"\r\n").decode("utf-8", errors="backslashreplace")
+
+
+def _diagnostic(result: GitResult) -> str | None:
+    if result.error:
+        return result.error
+    if result.stderr:
+        return f"non-authoritative utf-8/backslashreplace stderr: {_display_bytes(result.stderr)}"
+    return None
+
+
+def _capture_failure(name: str, result: GitResult) -> ConfigError:
+    detail = _diagnostic(result)
+    suffix = f"; {detail}" if detail else ""
+    return ConfigError(f"cannot capture Git {name}; exit code {result.returncode}{suffix}")
+
+
+def _find_git_marker(root: Path) -> Path | None:
+    """Find a .git file or directory without interpreting Git stderr."""
+
+    for directory in (root, *root.parents):
+        marker = directory / ".git"
+        try:
+            marker_status = marker.lstat()
+        except FileNotFoundError:
+            continue
+        except OSError as exc:
+            raise ConfigError(f"cannot inspect potential Git marker {marker}: {type(exc).__name__}") from exc
+        if stat.S_ISDIR(marker_status.st_mode) or stat.S_ISREG(marker_status.st_mode):
+            return marker
+    return None
+
+
+def _unavailable_source(manifest: LoadedManifest, reason: str, result: GitResult | None = None) -> SourceCapture:
     project = manifest.data["project"]
-    code, commit = _git(manifest.project_root, "rev-parse", "HEAD")
-    if code != 0:
-        return {
-            "available": False,
-            "root": str(manifest.project_root),
-            "expected_repo": project.get("repo"),
-            "expected_ref": project.get("ref"),
-        }
-
-    _, branch = _git(manifest.project_root, "branch", "--show-current")
-    _, remote = _git(manifest.project_root, "remote", "get-url", "origin")
-    _, status = _git(manifest.project_root, "status", "--porcelain", "--untracked-files=all")
-    _, diff = _git(manifest.project_root, "diff", "--binary", "HEAD")
-    dirty = bool(status)
-    return {
-        "available": True,
+    record: dict[str, Any] = {
+        "schema_version": 1,
+        "available": False,
+        "reason": reason,
         "root": str(manifest.project_root),
-        "commit": commit,
-        "branch": branch or None,
-        "remote": remote or None,
-        "dirty": dirty,
-        "diff_sha256": hashlib.sha256(diff.encode("utf-8")).hexdigest() if dirty else None,
         "expected_repo": project.get("repo"),
         "expected_ref": project.get("ref"),
         "allow_dirty": bool(project.get("allow_dirty", True)),
+        "git": {
+            "version": None,
+            "display_encoding": "utf-8",
+            "display_errors": "backslashreplace",
+            "display_authoritative": False,
+        },
+        "summary": {
+            "tracked_changes": None,
+            "untracked_file_count": None,
+        },
+        "coverage": {
+            "replay": "unavailable",
+            "tracked_changes": "not_captured",
+            "untracked_paths": "not_captured",
+            "untracked_contents": "not_captured",
+            "ignored_files": "not_captured",
+            "submodule_worktree_contents": "not_captured",
+        },
+        "git_status": {},
+        "git_patch": {},
     }
+    if result is not None and _diagnostic(result):
+        record["diagnostic"] = _diagnostic(result)
+    return SourceCapture(record=record, files={}, worktree_root=None)
 
 
-def validate_output_root(manifest: LoadedManifest) -> None:
+def capture_source(manifest: LoadedManifest) -> SourceCapture:
+    project = manifest.data["project"]
+    repository = _git_bytes(manifest.project_root, "rev-parse", "--is-inside-work-tree")
+    if repository.error == "git_unavailable":
+        return _unavailable_source(manifest, "git_unavailable", repository)
+    if repository.error:
+        raise _capture_failure("repository state", repository)
+    if repository.returncode != 0:
+        if _find_git_marker(manifest.project_root) is not None:
+            raise _capture_failure("repository state", repository)
+        return _unavailable_source(manifest, "not_git_repository", repository)
+    if repository.stdout.strip() != b"true":
+        return _unavailable_source(manifest, "not_git_repository", repository)
+
+    top_level_result = _git_bytes(manifest.project_root, "rev-parse", "--show-toplevel")
+    if top_level_result.returncode != 0:
+        raise _capture_failure("worktree root", top_level_result)
+    worktree_root = Path(os.fsdecode(top_level_result.stdout.rstrip(b"\r\n"))).resolve()
+
+    head = _git_bytes(worktree_root, "rev-parse", "--verify", "--quiet", "HEAD")
+    if head.returncode != 0:
+        if head.error:
+            raise _capture_failure("HEAD", head)
+        symbolic_head = _git_bytes(worktree_root, "symbolic-ref", "--quiet", "HEAD")
+        if symbolic_head.returncode == 0:
+            return _unavailable_source(manifest, "unborn_head", head)
+        if symbolic_head.error:
+            raise _capture_failure("symbolic HEAD", symbolic_head)
+        raise _capture_failure("HEAD", head)
+    try:
+        commit = head.stdout.strip().decode("ascii")
+    except UnicodeDecodeError as exc:
+        raise ConfigError("cannot capture Git HEAD; commit id is not ASCII") from exc
+
+    version = _git_bytes(worktree_root, "--version")
+    if version.returncode != 0:
+        raise _capture_failure("version", version)
+    branch_result = _git_bytes(worktree_root, "branch", "--show-current")
+    if branch_result.returncode != 0:
+        raise _capture_failure("branch", branch_result)
+    remote_result = _git_bytes(worktree_root, "config", "--get", "remote.origin.url")
+    if remote_result.returncode not in (0, 1):
+        raise _capture_failure("origin remote", remote_result)
+
+    status_args = ("status", "--porcelain=v1", "-z", "--untracked-files=all", "--no-renames")
+    status_result = _git_bytes(worktree_root, *status_args)
+    if status_result.returncode != 0:
+        raise _capture_failure("status", status_result)
+
+    patch_args = (
+        "-c",
+        "core.quotePath=true",
+        "-c",
+        "diff.orderFile=/dev/null",
+        "-c",
+        "diff.suppressBlankEmpty=false",
+        "diff",
+        "--binary",
+        "--full-index",
+        "--unified=3",
+        "--inter-hunk-context=0",
+        "--diff-algorithm=myers",
+        "--no-indent-heuristic",
+        "--no-renames",
+        "--submodule=short",
+        "--no-color",
+        "--no-ext-diff",
+        "--no-textconv",
+        "--src-prefix=a/",
+        "--dst-prefix=b/",
+        "HEAD",
+        "--",
+    )
+    patch_result = _git_bytes(worktree_root, *patch_args)
+    if patch_result.returncode != 0:
+        raise _capture_failure("patch", patch_result)
+
+    untracked_result = _git_bytes(
+        worktree_root,
+        "ls-files",
+        "--others",
+        "--exclude-standard",
+        "-z",
+        "--",
+    )
+    if untracked_result.returncode != 0:
+        raise _capture_failure("untracked file list", untracked_result)
+
+    status = status_result.stdout
+    patch = patch_result.stdout
+    untracked_count = sum(1 for item in untracked_result.stdout.split(b"\0") if item)
+    status_sha256 = sha256_bytes(status)
+    patch_sha256 = sha256_bytes(patch)
+    record = {
+        "schema_version": 1,
+        "available": True,
+        "root": str(manifest.project_root),
+        "worktree_root": str(worktree_root),
+        "commit": commit,
+        "branch": _display_bytes(branch_result.stdout) or None,
+        "remote": _display_bytes(remote_result.stdout) if remote_result.returncode == 0 else None,
+        "dirty": bool(status),
+        "diff_sha256": patch_sha256 if patch else None,
+        "expected_repo": project.get("repo"),
+        "expected_ref": project.get("ref"),
+        "allow_dirty": bool(project.get("allow_dirty", True)),
+        "git": {
+            "version": _display_bytes(version.stdout),
+            "display_encoding": "utf-8",
+            "display_errors": "backslashreplace",
+            "display_authoritative": False,
+        },
+        "summary": {
+            "tracked_changes": bool(patch),
+            "untracked_file_count": untracked_count,
+        },
+        "coverage": {
+            "replay": "partial",
+            "tracked_changes": "git_patch",
+            "untracked_paths": "git_status_only",
+            "untracked_contents": "not_captured",
+            "ignored_files": "not_captured",
+            "submodule_worktree_contents": "not_captured",
+        },
+        "git_status": {
+            "path": "source.status",
+            "format": "git-status-porcelain-v1-z",
+            "content_encoding": "binary",
+            "argv": ["git", *status_args],
+            "size_bytes": len(status),
+            "sha256": status_sha256,
+        },
+        "git_patch": {
+            "path": "source.patch",
+            "format": "git-diff",
+            "format_version": 1,
+            "content_encoding": "binary",
+            "base_commit": commit,
+            "scope": "tracked-index-and-worktree-against-head",
+            "binary_deltas": True,
+            "untracked_contents_included": False,
+            "argv": ["git", *patch_args],
+            "size_bytes": len(patch),
+            "sha256": patch_sha256,
+        },
+    }
+    return SourceCapture(
+        record=record,
+        files={"source.status": status, "source.patch": patch},
+        worktree_root=worktree_root,
+    )
+
+
+def validate_output_root(manifest: LoadedManifest, source: SourceCapture) -> None:
     """Reject evidence output that would dirty the audited Git worktree."""
 
-    code, top_level = _git(manifest.project_root, "rev-parse", "--show-toplevel")
-    if code != 0:
+    if source.record.get("available") is not True:
         return
-
-    worktree_root = Path(top_level).resolve()
+    worktree_root = source.worktree_root
+    if worktree_root is None:
+        raise ConfigError("cannot validate evidence output isolation; captured Git worktree root is missing")
+    try:
+        normalized_root = worktree_root.resolve(strict=True)
+    except OSError as exc:
+        raise ConfigError(
+            f"cannot validate evidence output isolation; captured Git worktree root is unavailable: {type(exc).__name__}"
+        ) from exc
+    if normalized_root != worktree_root or not worktree_root.is_dir():
+        raise ConfigError("cannot validate evidence output isolation; captured Git worktree root is not canonical")
     try:
         relative_output = manifest.output_root.relative_to(worktree_root)
     except ValueError:
@@ -76,7 +302,7 @@ def validate_output_root(manifest: LoadedManifest) -> None:
     ignored = False
     if relative_output != Path("."):
         ignore_probe = relative_output / ".reprotrace-probe"
-        code, _ = _git(
+        ignore_result = _git_bytes(
             worktree_root,
             "check-ignore",
             "--quiet",
@@ -84,7 +310,12 @@ def validate_output_root(manifest: LoadedManifest) -> None:
             "--",
             ignore_probe.as_posix(),
         )
-        ignored = code == 0
+        if ignore_result.returncode == 0:
+            ignored = True
+        elif ignore_result.returncode == 1 and ignore_result.error is None:
+            ignored = False
+        else:
+            raise _capture_failure("output ignore state", ignore_result)
     if not ignored:
         raise ConfigError(
             "run.output_root would create evidence inside the audited Git worktree "

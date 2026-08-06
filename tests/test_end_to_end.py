@@ -8,6 +8,7 @@ from pathlib import Path
 import pytest
 import yaml
 
+from reprotrace.capture import SourceCapture
 from reprotrace.diffing import compare_bundles
 from reprotrace.errors import ConfigError
 from reprotrace.io import read_json
@@ -149,7 +150,11 @@ def test_source_is_captured_before_evidence_directory_creation(tmp_path: Path, m
 
     def capture_before_output(loaded_manifest):
         observed["output_root_exists"] = loaded_manifest.output_root.exists()
-        return {"available": False, "root": str(loaded_manifest.project_root)}
+        return SourceCapture(
+            record={"available": False, "root": str(loaded_manifest.project_root)},
+            files={},
+            worktree_root=None,
+        )
 
     monkeypatch.setattr("reprotrace.runner.capture_source", capture_before_output)
 
@@ -185,6 +190,8 @@ def test_external_manifest_output_keeps_audited_checkout_clean(tmp_path: Path) -
 
     assert run_dir.parent == (adapter / ".evidence").resolve()
     assert read_json(run_dir / "source.json")["dirty"] is False
+    assert (run_dir / "source.patch").read_bytes() == b""
+    assert (run_dir / "source.status").read_bytes() == b""
     assert verification["preflight_passed"] is True
     status = subprocess.run(
         ["git", "status", "--porcelain", "--untracked-files=all"],
