@@ -7,7 +7,7 @@
 - 仓库：`https://github.com/YaoYang-123456/ReproTrace`
 - 本地工作目录：`E:\codex-work\ReproTrace-local`
 - 分支：`main`
-- HEAD：`442d7e415ec07be3572a422ffc745bbe9a93ae40`
+- HEAD：`ecdbae6a5ebd58096a52551439256eacaeffb8d0`
 - 本地 `main` 与 `origin/main`：当前一致
 - 本阶段开始时工作树：干净
 
@@ -30,7 +30,7 @@ source -> environment -> inputs -> commands -> logs -> artifacts -> metrics -> v
 
 ## 测试状态
 
-当前测试套件包含 13 项测试：原有 10 项测试，以及 3 项针对证据输出隔离和 source 快照顺序的回归测试。覆盖：
+当前测试套件包含 14 项测试：原有 10 项测试、3 项针对证据输出隔离和 source 快照顺序的回归测试，以及 1 项针对步骤环境变量占位符展开的回归测试。覆盖：
 
 - manifest 基本校验、shell 字符串拒绝和路径穿越拒绝；
 - tiny CPU 实验端到端运行；
@@ -62,7 +62,7 @@ source -> environment -> inputs -> commands -> logs -> artifacts -> metrics -> v
 
 正式 GPU 运行前仍有阻塞项：显式 seed 传递、CIFAR-100 预置与哈希、DINO 权重 revision 固定，以及 precision 的明确选择。当前不凭猜测设置 precision。
 
-上游入口的 `from utils import block_expansion` 仍存在静态导入风险。本阶段不加入 `PYTHONPATH`；后续应在独立 PEFT-ViT 环境中先运行不训练的 `python main.py fit --help`。只有该测试实际复现导入失败时，才设计最小 adapter 环境修正。
+在独立的 Windows CPU 环境中，固定提交的官方入口在未设置 `PYTHONPATH` 时实际以 `ModuleNotFoundError: No module named 'utils'` 失败。环境为 Python `3.10.20`、torch `2.0.1+cpu`、Lightning `2.0.2`、Transformers `4.36.0`。仅在 manifest 的训练步骤设置 `PYTHONPATH={project_root}/src` 后，`python -B main.py fit --help` 在约 4.1 秒内以退出码 0 返回完整 LightningCLI `fit` 帮助。这是 ReproTrace manifest 层的环境适配，不修改上游源码。
 
 ## PEFT-ViT 无训练 dry-run
 
@@ -106,4 +106,4 @@ python -m venv .venv
 
 ## 下一步
 
-下一步是在独立 PEFT-ViT 环境中执行不训练的入口帮助测试，确认实际 import 和 LightningCLI 形态；随后依次解决 seed、CIFAR-100 预置与哈希、DINO revision 和 precision。所有阻塞项关闭并单独确认 GPU 实验方案前，不启动训练。
+下一步是在独立 PEFT-ViT 环境中继续处理正式 GPU 运行前的阻塞项：seed、CIFAR-100 预置与哈希、DINO revision 和 precision。所有阻塞项关闭并单独确认 GPU 实验方案前，不启动训练。

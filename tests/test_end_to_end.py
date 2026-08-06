@@ -130,6 +130,19 @@ def test_dry_run_never_executes_command(tmp_path: Path) -> None:
     assert read_json(run_dir / "commands.json")[0]["status"] == "planned"
 
 
+def test_dry_run_records_expanded_step_environment(tmp_path: Path) -> None:
+    manifest = make_tiny_project(tmp_path)
+    data = yaml.safe_load(manifest.read_text(encoding="utf-8"))
+    data["run"]["steps"][0]["env"] = {"PYTHONPATH": "{project_root}/src"}
+    manifest.write_text(yaml.safe_dump(data, sort_keys=False), encoding="utf-8")
+
+    run_dir, verification = run_manifest(manifest, dry_run=True)
+
+    command = read_json(run_dir / "commands.json")[0]
+    assert verification["preflight_passed"] is True
+    assert command["environment_overrides"]["PYTHONPATH"] == f"{manifest.parent.resolve()}/src"
+
+
 def test_source_is_captured_before_evidence_directory_creation(tmp_path: Path, monkeypatch) -> None:
     manifest = make_tiny_project(tmp_path)
     observed: dict[str, bool] = {}
