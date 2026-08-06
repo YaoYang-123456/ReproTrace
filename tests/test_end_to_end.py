@@ -5,15 +5,25 @@ import subprocess
 import sys
 from pathlib import Path
 
+import pytest
 import yaml
 
 from reprotrace.diffing import compare_bundles
+from reprotrace.errors import ConfigError
 from reprotrace.io import read_json
 from reprotrace.runner import run_manifest
 from reprotrace.verifier import verify_bundle
 
 
 EXAMPLE = Path(__file__).parents[1] / "examples" / "tiny"
+
+
+def initialize_repository(project: Path, *paths: str) -> None:
+    subprocess.run(["git", "init", "-q", "-b", "main"], cwd=project, check=True)
+    subprocess.run(["git", "config", "user.name", "Test"], cwd=project, check=True)
+    subprocess.run(["git", "config", "user.email", "test@example.com"], cwd=project, check=True)
+    subprocess.run(["git", "add", *paths], cwd=project, check=True)
+    subprocess.run(["git", "commit", "-q", "-m", "fixture"], cwd=project, check=True)
 
 
 def make_tiny_project(tmp_path: Path) -> Path:
@@ -120,6 +130,84 @@ def test_dry_run_never_executes_command(tmp_path: Path) -> None:
     assert read_json(run_dir / "commands.json")[0]["status"] == "planned"
 
 
+def test_source_is_captured_before_evidence_directory_creation(tmp_path: Path, monkeypatch) -> None:
+    manifest = make_tiny_project(tmp_path)
+    observed: dict[str, bool] = {}
+
+    def capture_before_output(loaded_manifest):
+        observed["output_root_exists"] = loaded_manifest.output_root.exists()
+        return {"available": False, "root": str(loaded_manifest.project_root)}
+
+    monkeypatch.setattr("reprotrace.runner.capture_source", capture_before_output)
+
+    run_manifest(manifest, dry_run=True)
+
+    assert observed == {"output_root_exists": False}
+
+
+def test_external_manifest_output_keeps_audited_checkout_clean(tmp_path: Path) -> None:
+    checkout = tmp_path / "checkout"
+    checkout.mkdir()
+    (checkout / "tracked.txt").write_text("source\n", encoding="utf-8")
+    initialize_repository(checkout, "tracked.txt")
+
+    adapter = tmp_path / "adapter"
+    adapter.mkdir()
+    manifest = adapter / "reprotrace.yaml"
+    manifest.write_text(
+        yaml.safe_dump(
+            {
+                "schema_version": 0,
+                "project": {"name": "external", "root": ".", "allow_dirty": False},
+                "run": {
+                    "output_root": ".evidence",
+                    "steps": [{"id": "noop", "argv": [sys.executable, "-V"]}],
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    run_dir, verification = run_manifest(manifest, dry_run=True, project_root=checkout)
+
+    assert run_dir.parent == (adapter / ".evidence").resolve()
+    assert read_json(run_dir / "source.json")["dirty"] is False
+    assert verification["preflight_passed"] is True
+    status = subprocess.run(
+        ["git", "status", "--porcelain", "--untracked-files=all"],
+        cwd=checkout,
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    assert status.stdout == ""
+
+
+def test_rejects_unignored_output_inside_audited_checkout(tmp_path: Path) -> None:
+    checkout = tmp_path / "checkout"
+    checkout.mkdir()
+    manifest = checkout / "reprotrace.yaml"
+    manifest.write_text(
+        yaml.safe_dump(
+            {
+                "schema_version": 0,
+                "project": {"name": "unsafe-output", "root": "."},
+                "run": {
+                    "output_root": ".evidence",
+                    "steps": [{"id": "noop", "argv": [sys.executable, "-V"]}],
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    initialize_repository(checkout, "reprotrace.yaml")
+
+    with pytest.raises(ConfigError, match="inside the audited Git worktree"):
+        run_manifest(manifest, dry_run=True)
+
+    assert not (checkout / ".evidence").exists()
+
+
 def test_diff_reports_seed_and_artifact_changes(tmp_path: Path) -> None:
     manifest = make_tiny_project(tmp_path)
     left, _ = run_manifest(manifest, seed=1)
@@ -191,11 +279,8 @@ def test_dry_run_detects_wrong_source_ref(tmp_path: Path) -> None:
         ),
         encoding="utf-8",
     )
-    subprocess.run(["git", "init", "-q", "-b", "main"], cwd=project, check=True)
-    subprocess.run(["git", "config", "user.name", "Test"], cwd=project, check=True)
-    subprocess.run(["git", "config", "user.email", "test@example.com"], cwd=project, check=True)
-    subprocess.run(["git", "add", "reprotrace.yaml"], cwd=project, check=True)
-    subprocess.run(["git", "commit", "-q", "-m", "fixture"], cwd=project, check=True)
+    (project / ".gitignore").write_text(".evidence/\n", encoding="utf-8")
+    initialize_repository(project, "reprotrace.yaml", ".gitignore")
 
     _, verification = run_manifest(path, dry_run=True)
 

@@ -16,7 +16,7 @@ claim:
 inputs:
   - id: training-config
     kind: config
-    path: configs/lora/cifar100-r8-lr-0.05.yaml
+    path: configs/lora/cifar100-r8-lr-0.005.yaml
     required: true
   - id: cifar100
     kind: dataset
@@ -24,7 +24,7 @@ inputs:
     required: false
 
 run:
-  output_root: .reprotrace/runs
+  output_root: ../../.reprotrace/runs
   seed: 42
   steps:
     - id: train
@@ -33,7 +33,7 @@ run:
         - main.py
         - fit
         - --config
-        - configs/lora/cifar100-r8-lr-0.05.yaml
+        - configs/lora/cifar100-r8-lr-0.005.yaml
       timeout_seconds: 21600
       artifacts:
         - output/**/metrics.csv
@@ -47,5 +47,6 @@ metrics:
     column: val_acc
     select: max
     expected: 0.8827
+    # ReproTrace-defined acceptance threshold; not a tolerance reported by the paper.
     atol: 0.01
     rtol: 0.0

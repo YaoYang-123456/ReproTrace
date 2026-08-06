@@ -7,7 +7,7 @@
 - 仓库：`https://github.com/YaoYang-123456/ReproTrace`
 - 本地工作目录：`E:\codex-work\ReproTrace-local`
 - 分支：`main`
-- HEAD：`a7e317c410ffe860a98eec8af9d0061e520ba600`
+- HEAD：`442d7e415ec07be3572a422ffc745bbe9a93ae40`
 - 本地 `main` 与 `origin/main`：当前一致
 - 本阶段开始时工作树：干净
 
@@ -30,7 +30,7 @@ source -> environment -> inputs -> commands -> logs -> artifacts -> metrics -> v
 
 ## 测试状态
 
-当前测试套件包含 10 项测试，覆盖：
+当前测试套件包含 13 项测试：原有 10 项测试，以及 3 项针对证据输出隔离和 source 快照顺序的回归测试。覆盖：
 
 - manifest 基本校验、shell 字符串拒绝和路径穿越拒绝；
 - tiny CPU 实验端到端运行；
@@ -40,8 +40,6 @@ source -> environment -> inputs -> commands -> logs -> artifacts -> metrics -> v
 - seed 和产物变化的 diff；
 - CSV 与日志正则指标提取；
 - source ref 预检失败。
-
-Windows CPU baseline 的实际结果将在本阶段验证完成后补充。
 
 ## 固定调研提交
 
@@ -54,14 +52,30 @@ Windows CPU baseline 的实际结果将在本阶段验证完成后补充。
 
 ## PEFT-ViT 当前状态
 
-`examples/peft-vit/reprotrace.yaml` 目前只是待核验的 approximate adapter，不是已经确认的严格论文复现配置。真实 checkout 中必须再次确认：
+`examples/peft-vit/reprotrace.yaml` 是 approximate adapter，不是严格论文复现配置。固定提交的只读审计已确认：
 
-- 配置路径：`configs/lora/cifar100-r8-lr-0.05.yaml`；
-- 命令形式：`python main.py fit --config configs/lora/cifar100-r8-lr-0.05.yaml`；
-- 指标列名：`val_acc`；
-- 目标值：`0.8827`，当前 manifest 容差为 `atol=0.01`、`rtol=0.0`。
+- 复现目标为官方 README/Table 1 的 CIFAR-100、LoRA `r=8`、88.27%；
+- 配置路径为 `configs/lora/cifar100-r8-lr-0.005.yaml`；
+- 命令形式为 `python main.py fit --config configs/lora/cifar100-r8-lr-0.005.yaml`；
+- CSV 验证指标列名为 `val_acc`；
+- 目标值为 `0.8827`；`atol=0.01` 是 ReproTrace 自定的验收阈值，不是论文提供的容差。
 
-在固定提交的真实 checkout、输入文件和输出格式完成核对前，不把这些字段当作已验证事实。
+正式 GPU 运行前仍有阻塞项：显式 seed 传递、CIFAR-100 预置与哈希、DINO 权重 revision 固定，以及 precision 的明确选择。当前不凭猜测设置 precision。
+
+上游入口的 `from utils import block_expansion` 仍存在静态导入风险。本阶段不加入 `PYTHONPATH`；后续应在独立 PEFT-ViT 环境中先运行不训练的 `python main.py fit --help`。只有该测试实际复现导入失败时，才设计最小 adapter 环境修正。
+
+## PEFT-ViT 无训练 dry-run
+
+2026-08-06 在固定 checkout `5095e75ef45018baef7ccf935ba6095b6d030d9b` 上完成真实 dry-run：
+
+- evidence bundle：`E:\codex-work\ReproTrace-local\.reprotrace\runs\20260806T081122Z-40cddc`；
+- 状态：`planned`，`preflight_passed=true`；
+- source：固定 commit 匹配，`dirty=false`；
+- training config：存在，SHA-256 为 `41d3536e002272816e36a004c8d96d07d5e4b4da24e3861d39d3d3587679eb2c`；
+- CIFAR-100：当前未预置，作为正式 GPU 运行前阻塞项保留；
+- planned command 使用 `configs/lora/cifar100-r8-lr-0.005.yaml`；
+- PEFT-ViT checkout 内未创建 `.reprotrace/`，工作树保持 clean；
+- 未导入 PEFT-ViT 入口、未下载数据、未执行训练、未使用 GPU。
 
 ## Windows CPU baseline
 
@@ -92,4 +106,4 @@ python -m venv .venv
 
 ## 下一步
 
-完成 Windows CPU baseline 后，下一步是对 PEFT-ViT 固定提交 `5095e75ef45018baef7ccf935ba6095b6d030d9b` 的真实 checkout 执行 dry-run。dry-run 通过前不设计并启动长时间 GPU 训练；dry-run 通过后仍需单独确认 GPU 实验方案。
+下一步是在独立 PEFT-ViT 环境中执行不训练的入口帮助测试，确认实际 import 和 LightningCLI 形态；随后依次解决 seed、CIFAR-100 预置与哈希、DINO revision 和 precision。所有阻塞项关闭并单独确认 GPU 实验方案前，不启动训练。

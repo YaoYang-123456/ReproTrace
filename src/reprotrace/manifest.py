@@ -54,7 +54,7 @@ def load_manifest(path: str | Path, project_root: str | Path | None = None) -> L
     _require(root.is_dir(), f"project root does not exist or is not a directory: {root}")
 
     output_value = Path(data["run"].get("output_root", ".reprotrace/runs")).expanduser()
-    output_root = output_value if output_value.is_absolute() else root / output_value
+    output_root = output_value if output_value.is_absolute() else manifest_path.parent / output_value
     output_root = output_root.resolve()
 
     data["project"]["root"] = str(root)

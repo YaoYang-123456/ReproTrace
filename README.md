@@ -47,6 +47,10 @@ The reusable PEFT-ViT manifest is pinned to the audited upstream commit. The
 checkout path is supplied explicitly so the example remains outside that
 repository. ReproTrace checks required inputs during this preflight.
 
+Relative `run.output_root` paths are resolved from the manifest directory, not
+from `project.root`. ReproTrace rejects an unignored evidence output path inside
+the audited Git worktree so its own bundle cannot make the recorded source dirty.
+
 ## Exit codes
 
 - `0`: verification/preflight passed, or a report completed;

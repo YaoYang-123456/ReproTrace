@@ -11,7 +11,13 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from .capture import capture_artifacts, capture_environment, capture_inputs, capture_source
+from .capture import (
+    capture_artifacts,
+    capture_environment,
+    capture_inputs,
+    capture_source,
+    validate_output_root,
+)
 from .errors import ConfigError
 from .io import utc_now, write_json, write_yaml
 from .manifest import (
@@ -156,6 +162,8 @@ def run_manifest(
     run_id = _new_run_id()
     run_dir = manifest.output_root / run_id
     context = runtime_context(manifest, run_dir, chosen_seed)
+    source = capture_source(manifest)
+    validate_output_root(manifest)
     inputs = capture_inputs(manifest, context)
     run_dir.mkdir(parents=True, exist_ok=False)
     (run_dir / "logs").mkdir()
@@ -175,7 +183,7 @@ def run_manifest(
     }
     write_json(run_dir / "run.json", run_record)
     write_yaml(run_dir / "manifest.resolved.yaml", redacted_manifest(manifest.data))
-    write_json(run_dir / "source.json", capture_source(manifest))
+    write_json(run_dir / "source.json", source)
     write_json(run_dir / "environment.json", capture_environment())
     write_json(run_dir / "inputs.json", inputs)
 

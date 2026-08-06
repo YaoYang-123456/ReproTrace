@@ -25,13 +25,18 @@ def test_rejects_shell_string(tmp_path: Path) -> None:
 def test_project_root_override(tmp_path: Path) -> None:
     checkout = tmp_path / "checkout"
     checkout.mkdir()
-    path = tmp_path / "reprotrace.yaml"
+    adapter = tmp_path / "adapter"
+    adapter.mkdir()
+    path = adapter / "reprotrace.yaml"
     path.write_text(
         yaml.safe_dump(
             {
                 "schema_version": 0,
                 "project": {"name": "portable", "root": "/does/not/exist"},
-                "run": {"steps": [{"id": "ok", "argv": ["python", "-V"]}]},
+                "run": {
+                    "output_root": ".evidence",
+                    "steps": [{"id": "ok", "argv": ["python", "-V"]}],
+                },
             }
         ),
         encoding="utf-8",
@@ -39,6 +44,7 @@ def test_project_root_override(tmp_path: Path) -> None:
 
     loaded = load_manifest(path, project_root=checkout)
     assert loaded.project_root == checkout.resolve()
+    assert loaded.output_root == (adapter / ".evidence").resolve()
 
 
 def test_rejects_step_id_path_traversal(tmp_path: Path) -> None:

@@ -26,6 +26,11 @@ schema, but no project name is hard-coded into the implementation.
 without launching the experiment. A successful preflight exits `0`, but its
 evidence status remains `planned`; it is not a reproduced result.
 
+Relative evidence output roots are resolved from the manifest directory. Before
+creating a bundle, ReproTrace captures the source state and rejects an unignored
+output path inside the audited Git worktree. This keeps recorder output separate
+from the source state it is meant to describe.
+
 ## v0 boundaries
 
 Supported now:

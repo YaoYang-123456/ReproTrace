@@ -60,6 +60,38 @@ def capture_source(manifest: LoadedManifest) -> dict[str, Any]:
     }
 
 
+def validate_output_root(manifest: LoadedManifest) -> None:
+    """Reject evidence output that would dirty the audited Git worktree."""
+
+    code, top_level = _git(manifest.project_root, "rev-parse", "--show-toplevel")
+    if code != 0:
+        return
+
+    worktree_root = Path(top_level).resolve()
+    try:
+        relative_output = manifest.output_root.relative_to(worktree_root)
+    except ValueError:
+        return
+
+    ignored = False
+    if relative_output != Path("."):
+        ignore_probe = relative_output / ".reprotrace-probe"
+        code, _ = _git(
+            worktree_root,
+            "check-ignore",
+            "--quiet",
+            "--no-index",
+            "--",
+            ignore_probe.as_posix(),
+        )
+        ignored = code == 0
+    if not ignored:
+        raise ConfigError(
+            "run.output_root would create evidence inside the audited Git worktree "
+            f"at an unignored path: {manifest.output_root}"
+        )
+
+
 def capture_environment() -> dict[str, Any]:
     distributions = []
     for distribution in importlib.metadata.distributions():
