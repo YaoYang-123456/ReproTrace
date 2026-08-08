@@ -33,6 +33,8 @@ from .metrics import (
     empty_metric_sources_record,
     extract_metrics_from_evidence,
 )
+from .closure import evidence_dependency_declarations
+from .evidence import write_evidence_index
 from .reporting import generate_report
 from .verifier import verify_bundle
 
@@ -81,6 +83,8 @@ def _planned_commands(
     commands = []
     for step in manifest.data["run"]["steps"]:
         argv, cwd, overrides = _resolved_command(manifest, step, context, run_dir)
+        stdout_evidence_path = f"logs/{step['id']}.stdout.log"
+        stderr_evidence_path = f"logs/{step['id']}.stderr.log"
         commands.append(
             {
                 "step_id": step["id"],
@@ -92,6 +96,8 @@ def _planned_commands(
                 "timeout_seconds": step.get("timeout_seconds"),
                 "stdout_path": str(run_dir / "logs" / f"{step['id']}.stdout.log"),
                 "stderr_path": str(run_dir / "logs" / f"{step['id']}.stderr.log"),
+                "stdout_evidence_path": stdout_evidence_path,
+                "stderr_evidence_path": stderr_evidence_path,
             }
         )
     return commands
@@ -147,6 +153,8 @@ def _execute_commands(
             "error": error,
             "stdout_path": str(stdout_path),
             "stderr_path": str(stderr_path),
+            "stdout_evidence_path": f"logs/{step['id']}.stdout.log",
+            "stderr_evidence_path": f"logs/{step['id']}.stderr.log",
         }
         commands.append(record)
         if status != "completed":
@@ -177,7 +185,7 @@ def run_manifest(
             write_bytes_atomic(run_dir / relative_path, source_capture.files[relative_path])
     write_json_atomic(run_dir / "source.json", source_capture.record)
     run_record: dict[str, Any] = {
-        "schema_version": 0,
+        "schema_version": 1,
         "run_id": run_id,
         "project_name": manifest.data["project"]["name"],
         "claim": manifest.data.get("claim", {}),
@@ -199,17 +207,31 @@ def run_manifest(
     if dry_run:
         commands = _planned_commands(manifest, context, run_dir)
         _write_commands(run_dir, commands)
-        write_json(run_dir / "artifacts.json", [])
-        write_json(run_dir / "metrics.json", [])
+        artifacts: list[dict[str, Any]] = []
+        metrics: list[dict[str, Any]] = []
+        write_json(run_dir / "artifacts.json", artifacts)
+        write_json(run_dir / "metrics.json", metrics)
         run_record.update(status="planned", finished_at=utc_now())
         write_json(run_dir / "run.json", run_record)
+        write_evidence_index(
+            run_dir,
+            evidence_dependency_declarations(
+                run=run_record,
+                source=source_capture.record,
+                inputs=inputs,
+                commands=commands,
+                artifacts=artifacts,
+                metric_sources=metric_sources,
+            ),
+        )
         verification = verify_bundle(run_dir)
         generate_report(run_dir)
         return run_dir, verification
 
     commands = _execute_commands(manifest, context, run_dir)
     _write_commands(run_dir, commands)
-    write_json(run_dir / "artifacts.json", capture_artifacts(manifest, context))
+    artifacts = capture_artifacts(manifest, context, run_dir)
+    write_json(run_dir / "artifacts.json", artifacts)
     metrics: list[dict[str, Any]] = []
     if commands and all(item["status"] == "completed" for item in commands):
         try:
@@ -228,6 +250,17 @@ def run_manifest(
         finished_at=utc_now(),
     )
     write_json(run_dir / "run.json", run_record)
+    write_evidence_index(
+        run_dir,
+        evidence_dependency_declarations(
+            run=run_record,
+            source=source_capture.record,
+            inputs=inputs,
+            commands=commands,
+            artifacts=artifacts,
+            metric_sources=metric_sources,
+        ),
+    )
     verification = verify_bundle(run_dir)
     generate_report(run_dir)
     return run_dir, verification

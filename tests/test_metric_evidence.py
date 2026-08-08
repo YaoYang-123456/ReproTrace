@@ -94,9 +94,9 @@ def test_external_csv_is_snapshotted_and_extracted_from_bundle(tmp_path: Path) -
     assert metric["actual"] == 7.5
     assert metric["source_paths"] == [str(origin.resolve())]
     assert metric["source_evidence_paths"] == [source["evidence_path"]]
-    assert verification["assurance_level"] == "recorded"
-    assert verification["coverage"]["metric_sources"]["captured"] == 0
-    assert verification["result_status"] == "not_evaluated"
+    assert verification["assurance_level"] == "metric_derivations_recomputed"
+    assert verification["coverage"]["metric_sources"]["captured"] == 1
+    assert verification["result_status"] == "matched"
 
 
 def test_extraction_is_independent_of_origin_after_capture(tmp_path: Path) -> None:
@@ -190,7 +190,7 @@ def test_zero_metric_run_writes_empty_metric_source_schema(tmp_path: Path) -> No
     assert read_json(run_dir / "metric_sources.json") == {"schema_version": 1, "metrics": []}
     assert read_json(run_dir / "metrics.json") == []
     assert verification["status"] == "passed"
-    assert verification["assurance_level"] == "recorded"
+    assert verification["assurance_level"] == "bundle_integrity_checked"
 
 
 def test_metric_source_schema_rejects_duplicate_metric_ids() -> None:

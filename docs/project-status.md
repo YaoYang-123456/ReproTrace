@@ -1,6 +1,6 @@
 # ReproTrace 项目状态
 
-更新时间：2026-08-06
+更新时间：2026-08-08
 
 ## 仓库快照
 
@@ -27,6 +27,36 @@ source -> environment -> inputs -> commands -> logs -> artifacts -> metrics -> v
 ```
 
 当前能力包括 CSV 与日志正则指标提取、SHA-256 输入和产物校验、dry-run 预检、argv 数组执行，以及敏感环境变量脱敏。
+
+## C5 Stage 4 assurance verifier
+
+新运行使用 `run.json.schema_version=1`，并在 producer records 完成后生成
+canonical `evidence.index.json`。索引只包含 verifier 的实际依赖闭包：核心记录、
+source patch/status、已尝试命令的 stdout/stderr、bundle-local inputs/artifacts
+以及 raw metric sources；`verification.json`、`report.md` 和索引自身不参与。
+
+Schema-1 verifier 不访问 input、artifact、command 或 metric source 的 origin
+绝对路径。它检查安全 bundle-relative 路径、索引闭包、每个文件的大小与 SHA-256，
+并从 ordered raw metric evidence 重算指标。重算结果与 `metrics.json` 使用严格数值
+一致性比较；实验的 expected/atol/rtol 只以 resolved manifest 为权威。
+
+Assurance 与结果保持正交：完整索引达到 `bundle_integrity_checked`；至少一个指标且
+所有派生一致时达到 `metric_derivations_recomputed`。科学容差未满足只产生
+`result_status=not_matched`，不会降低 assurance。零指标和 dry-run 的完整 planning
+bundle 可达到 bundle integrity，但结果为 `not_evaluated`。Coverage 中
+`metric_sources.captured` 统计完整验证 source set 的 metric 数，
+`source_files_captured` 单独统计文件数。
+
+Legacy run schema 0 继续可读，最高 assurance 固定为 `recorded`、result 固定为
+`not_evaluated`，且不重新读取旧 input/artifact origin 路径。所有级别仍明确不建立
+execution authenticity、independent replay 或 scientific reproduction。
+
+Stage 4 本地验证结果：默认编码与 `python -X utf8=0`（cp1252）完整套件均为
+`130 passed, 4 skipped`。四个 skip 是当前 Windows 账户没有普通 file/directory
+symlink 创建权限；Windows junction 逃逸测试实际执行并通过。真实 tiny CPU bundle
+使用 run schema 1，16 个 closure entries 全部验证，最终为
+`verification_status=complete`、`assurance_level=metric_derivations_recomputed`、
+`execution_record_status=recorded_success`、`result_status=matched`。
 
 ## 测试状态
 

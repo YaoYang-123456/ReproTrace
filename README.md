@@ -25,7 +25,8 @@ reprotrace run examples/tiny/reprotrace.yaml
 
 The command prints the evidence directory. It contains the resolved manifest,
 source and environment snapshots, input and artifact hashes, command records,
-raw logs, extracted metrics, verification result, and a Markdown report. For a
+raw logs, extracted metrics, a canonical evidence index, verification result,
+and a Markdown report. For a
 Git worktree, `source.patch` preserves the exact binary-capable diff bytes and
 `source.status` preserves the NUL-delimited porcelain status; `source.json`
 records their formats, sizes, SHA-256 hashes, and replay coverage.
@@ -82,8 +83,9 @@ See [the v0 design note](docs/design-v0.md) for the current scope and decisions.
 The canonical C5 verification vocabulary and its explicit limitations are
 defined in [the assurance contract](docs/assurance-contract-v1.md). The
 bundle-safe path rules and canonical index format are defined in
-[the evidence index specification](docs/evidence-index-v1.md); current runner
-bundles do not emit that index or claim bundle-integrity assurance yet.
+[the evidence index specification](docs/evidence-index-v1.md). New schema-1 runs
+emit a dependency-closure index and can reach bundle-integrity assurance after
+all indexed bytes and authoritative references are checked.
 The raw metric source schema and its Stage 3 assurance boundary are documented
 in [the metric source specification](docs/metric-sources-v1.md).
 

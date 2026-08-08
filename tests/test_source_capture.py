@@ -510,6 +510,9 @@ def test_source_json_is_not_written_after_binary_write_failure(
 
 def test_legacy_source_bundle_remains_readable(tmp_path: Path) -> None:
     _, _, run_dir = make_bundle(tmp_path)
+    run = read_json(run_dir / "run.json")
+    run["schema_version"] = 0
+    write_json(run_dir / "run.json", run)
     source = read_json(run_dir / "source.json")
     legacy = {
         key: source.get(key)

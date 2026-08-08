@@ -1,8 +1,9 @@
 # Canonical evidence index v1
 
-Stage 2 defines bundle-safe path and evidence-index primitives. It does not yet
-connect the existing runner or verifier to a complete indexed evidence closure,
-so current production bundles remain at assurance level `recorded`.
+Stage 2 defines bundle-safe path and evidence-index primitives. Stage 4 connects
+them to new run schema 1: the runner indexes the verifier's authoritative
+dependency closure, and the verifier checks both every indexed file and exact
+closure membership before granting bundle-integrity assurance.
 
 ## Bundle-local paths
 
@@ -57,14 +58,17 @@ proof, trusted digest, attestation, producer identity, or trusted timestamp. If
 an attacker can replace both evidence and the index, an externally trusted root
 is required to detect that replacement; trusted roots are outside Stage 2.
 
-## Stage boundary
+## Production closure
 
-The Stage 2 API can build, atomically write, read, and validate an index. It does
-not make the current runner emit an index, does not migrate legacy bundles, and
-does not raise assurance to `bundle_integrity_checked`. That upgrade requires a
-future production verification path to prove that its complete required evidence
-closure and every verifier dependency are indexed and verified.
+For run schema 1, the closure contains core records, referenced source status and
+patch files, attempted-command stdout/stderr logs, bundle-local inputs and
+artifacts, and ordered raw metric source evidence. Duplicate references merge
+their roles; for example, one metrics CSV can be both `artifact` and
+`metric_source`. Files not referenced by an authoritative record are not added
+merely because they exist in the directory.
 
-Stage 3 raw metric source snapshots are defined separately and are not
-automatically enrolled in a production evidence index. Metric re-extraction and
-the complete assurance pipeline remain Stage 4 concerns.
+The verifier derives the same expected closure independently from bundle
+records, requires exact path and role agreement, validates every indexed byte,
+and emits `evidence_root_sha256` only when the complete integrity contract
+passes. The root remains a snapshot identifier, never an authenticity proof.
+Legacy run schema 0 is not migrated or upgraded.

@@ -1,9 +1,9 @@
 # Raw metric source evidence v1
 
 Stage 3 captures the exact files consumed by each metric extractor so a new run's
-derived `metrics.json` can be traced to bundle-local raw evidence. It does not
-perform verifier-side re-extraction or raise assurance above `recorded`; those
-checks belong to Stage 4.
+derived `metrics.json` can be traced to bundle-local raw evidence. Stage 4 now
+performs verifier-side re-extraction for run schema 1 and grants derivation
+assurance only when the complete indexed closure and all derived fields agree.
 
 ## Record format
 
@@ -83,10 +83,9 @@ carry expected values or tolerances.
 ## Assurance and race boundary
 
 Raw evidence capture alone does not establish that the producer execution was
-authentic, that the complete bundle closure is intact, or that a verifier has
-independently recomputed the metric. Existing verification therefore remains at
-`recorded` until Stage 4 performs the required bundle integrity and derivation
-checks.
+authentic. Stage 4 can establish internal bundle integrity and recompute metric
+derivations, but it still does not establish producer identity, independent
+execution replay, or scientific reproduction.
 
 Stage 3 snapshots one observed byte sequence and derives the metric from that
 same bundle-local sequence. It does not claim protection against a malicious

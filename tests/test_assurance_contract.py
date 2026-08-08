@@ -174,11 +174,16 @@ def test_schema_one_verification_skeleton_preserves_legacy_fields(tmp_path: Path
 
     assert verification["schema_version"] == 1
     assert verification["verification_status"] == "complete"
-    assert verification["assurance_level"] == "recorded"
+    assert verification["assurance_level"] == "bundle_integrity_checked"
     assert verification["execution_record_status"] == "recorded_success"
     assert verification["result_status"] == "not_evaluated"
     assert verification["checks_passed"] is True
-    assert verification["coverage"]["metric_sources"] == {"captured": 0, "recorded": 0, "total": 0}
+    assert verification["coverage"]["metric_sources"] == {
+        "captured": 0,
+        "recorded": 0,
+        "source_files_captured": 0,
+        "total": 0,
+    }
     assert verification["not_established"] == NOT_ESTABLISHED
     assert verification["compatibility"] == {
         "deprecated_fields": ["status", "passed", "preflight_passed"],
@@ -189,14 +194,14 @@ def test_schema_one_verification_skeleton_preserves_legacy_fields(tmp_path: Path
     assert verification["passed"] is True
     assert verification["preflight_passed"] is None
     assert (run_dir / "verification.json").is_file()
-    assert not (run_dir / "evidence.index.json").exists()
+    assert (run_dir / "evidence.index.json").is_file()
 
 
 def test_dry_run_is_not_an_execution_failure(tmp_path: Path) -> None:
     _, verification = run_manifest(make_contract_manifest(tmp_path), dry_run=True)
 
     assert verification["verification_status"] == "complete"
-    assert verification["assurance_level"] == "recorded"
+    assert verification["assurance_level"] == "bundle_integrity_checked"
     assert verification["execution_record_status"] == "not_run"
     assert verification["result_status"] == "not_evaluated"
     assert verification["checks_passed"] is True
@@ -210,11 +215,12 @@ def test_recorded_command_failure_is_orthogonal_to_assurance(tmp_path: Path) -> 
     _, verification = run_manifest(make_contract_manifest(tmp_path, exit_code=3))
 
     assert verification["verification_status"] == "complete"
-    assert verification["assurance_level"] == "recorded"
+    assert verification["assurance_level"] == "bundle_integrity_checked"
     assert verification["execution_record_status"] == "recorded_failure"
     assert verification["result_status"] == "not_evaluated"
     assert verification["checks_passed"] is True
-    assert verification["contract_checks"] == []
+    assert verification["contract_checks"]
+    assert all(check["kind"] in {"structure", "integrity"} for check in verification["contract_checks"])
     assert verification["status"] == "failed"
     assert verification["passed"] is False
 
@@ -223,15 +229,15 @@ def test_metric_mismatch_only_changes_legacy_compatibility_semantics(tmp_path: P
     _, verification = run_manifest(make_metric_mismatch_manifest(tmp_path))
 
     checks = {check["id"]: check for check in verification["checks"]}
-    assert checks["step:record-metric"]["passed"] is True
-    assert checks["metric:score"]["passed"] is False
+    assert checks["command:record-metric:recorded-outcome"]["passed"] is True
+    assert checks["metric:score:expectation"]["passed"] is False
     assert verification["status"] == "failed"
     assert verification["passed"] is False
     assert verification["verification_status"] == "complete"
     assert verification["checks_passed"] is True
-    assert verification["contract_checks"] == []
-    assert verification["assurance_level"] == "recorded"
-    assert verification["result_status"] == "not_evaluated"
+    assert all(check["kind"] != "expectation" for check in verification["contract_checks"])
+    assert verification["assurance_level"] == "metric_derivations_recomputed"
+    assert verification["result_status"] == "not_matched"
 
 
 def test_metric_coverage_total_comes_from_resolved_manifest(tmp_path: Path) -> None:
@@ -241,8 +247,9 @@ def test_metric_coverage_total_comes_from_resolved_manifest(tmp_path: Path) -> N
     verification = verify_bundle(run_dir, write=False)
 
     assert verification["coverage"]["metric_sources"] == {
-        "captured": 0,
+        "captured": 1,
         "recorded": 0,
+        "source_files_captured": 1,
         "total": 1,
     }
 

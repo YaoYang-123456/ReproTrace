@@ -15,9 +15,11 @@ schema, but no project name is hard-coded into the implementation.
 
 - `run`: resolve a manifest, capture pre-execution evidence, execute sequential
   steps, collect artifacts and metrics, then verify the bundle.
-- `verify`: re-check recorded steps, current input/artifact hashes, and metric
-  tolerances. Exit `0` means pass, `1` means mismatch, and `2` means invalid
-  evidence or configuration.
+- `verify`: for run schema 1, validate the bundle-local indexed dependency
+  closure, recompute metrics from indexed raw evidence, and evaluate declared
+  tolerances from the resolved manifest. Legacy schema 0 remains readable
+  without dereferencing recorded input/artifact origin paths. Exit `0` means
+  pass, `1` means mismatch, and `2` means invalid evidence or configuration.
 - `diff`: compare two bundles across source, environment, inputs, commands,
   artifacts, and metrics.
 - `report`: regenerate a readable Markdown report from machine-readable files.
@@ -30,6 +32,23 @@ Relative evidence output roots are resolved from the manifest directory. Before
 creating a bundle, ReproTrace captures the source state and rejects an unignored
 output path inside the audited Git worktree. This keeps recorder output separate
 from the source state it is meant to describe.
+
+## Schema-1 verification pipeline
+
+New normal and dry runs write `run.json` schema 1 and a canonical
+`evidence.index.json`. The index is built only after command logs are closed and
+all producer records are finalized. It contains the exact verifier dependency
+closure: core records, referenced source evidence, attempted-command logs,
+bundle-local inputs/artifacts, and raw metric sources. Self-derived index,
+verification, and report files are excluded.
+
+The verifier never opens schema-1 origin metadata. Bundle evidence is resolved
+through the shared safe-path resolver and must be a regular indexed file with
+matching size and SHA-256. External inputs and artifacts remain metadata-only.
+Metric values are recomputed from the ordered `metric_sources.json` evidence
+paths, compared strictly with cached derived values, and then compared with the
+resolved manifest's expected value and scientific tolerances. Expectation
+mismatch changes `result_status`, not verification completeness or assurance.
 
 ## Source evidence format
 

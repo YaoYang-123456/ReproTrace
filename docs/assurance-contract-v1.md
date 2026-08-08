@@ -31,10 +31,10 @@ stored derivation and declared tolerance decision were checked against the
 resolved manifest. A valid zero-metric experiment stops at
 `bundle_integrity_checked` without failing verification.
 
-Stage 1 defines this hierarchy but conservatively assigns existing schema-0
-bundles only `recorded`. Stage 2 adds canonical evidence-index primitives but
-does not yet connect production bundles to a complete indexed closure, so those
-bundles remain `recorded`. Raw metric derivation is Stage 3/4.
+Stage 1 defines this hierarchy and conservatively assigns schema-0 bundles only
+`recorded`. Stage 2 adds canonical evidence-index primitives, Stage 3 adds raw
+metric evidence, and Stage 4 connects both to new run schema 1. A schema-1 run
+reaches only the highest level supported by checks that actually completed.
 
 ## Orthogonal canonical fields
 
@@ -88,27 +88,34 @@ No value establishes that a real process ran. Every verification record carries:
 }
 ```
 
-## Coverage skeleton
+## Coverage
 
-Stage 1 emits machine-readable coverage without claiming evidence closure:
+Legacy schema-0 verification retains the conservative Stage-1 coverage shape.
+Schema-1 verification reports validated bundle-local coverage:
 
 ```json
 {
   "coverage": {
-    "inputs": {"bundle_local": 0, "external_metadata_only": 2},
-    "artifacts": {"bundle_local": 0, "external_metadata_only": 1},
-    "metric_sources": {"captured": 0, "recorded": 0, "total": 1},
+    "inputs": {"bundle_local": 0, "external_metadata_only": 2, "total": 2},
+    "artifacts": {"bundle_local": 1, "external_metadata_only": 0, "total": 1},
+    "metric_sources": {
+      "captured": 1,
+      "recorded": 1,
+      "source_files_captured": 2,
+      "total": 1
+    },
     "source": {"replay": "partial"}
   }
 }
 ```
 
 `metric_sources.total` is the authoritative declared metric count from
-`manifest.resolved.yaml`; `recorded` is the number of derived records currently
-present in `metrics.json`. Stage 3 captures raw metric source evidence for new
-normal runs, but the Stage 1 verification skeleton continues to report
-`captured: 0` until Stage 4 actually validates those records and their bundle
-closure. These counts do not upgrade assurance.
+`manifest.resolved.yaml`; `recorded` is the number of derived records present in
+`metrics.json`; `captured` is the number of declared metrics whose complete
+ordered source set is indexed and passes source metadata and byte-integrity
+checks. `source_files_captured` is the number of files in those successfully
+validated source sets. Metric counts and file counts are therefore never mixed.
+Dry-runs report the manifest total but zero captured sources.
 
 ## Deprecated compatibility fields
 
