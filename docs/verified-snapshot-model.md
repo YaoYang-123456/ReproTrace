@@ -4,8 +4,9 @@ Stage 6.2 introduces a verifier-private logical snapshot so that later
 verification, metric extraction, and reporting can consume the same bytes that
 were checked against one captured `evidence.index.json`. Stage 6.2a defines the
 ownership and lifecycle model. Stage 6.2b adds a separately reviewable
-single-file acquisition primitive. Neither stage changes production verification
-behavior yet.
+single-file acquisition primitive. Stage 6.2c composes those pieces into a
+complete schema-1 logical snapshot builder. None of these stages changes
+production verification behavior yet.
 
 ## Objects and ownership
 
@@ -119,13 +120,63 @@ arbitrary high-frequency ABA attacks or hostile multi-user filesystem control;
 full component-by-component `openat` walking and native `CreateFileW` wrappers
 remain outside the approved design.
 
+## Schema-1 bootstrap and index-wide construction
+
+Stage 6.2c adds the internal `open_schema_one_snapshot()` builder. It captures
+the bundle-root identity once and reuses that expected identity for every
+bootstrap and indexed acquisition. The builder returns an already-open
+`VerificationSession`; the snapshot is complete and sealed, while its private
+spool resources remain usable until the caller exits the session context.
+
+`run.json` is the schema bootstrap and is therefore special. The builder
+handle-captures its exact bytes once into immutable memory, parses only those
+bytes to determine the schema, and stops without opening the index for schema
+0. For schema 1 it next handle-captures `evidence.index.json` once. The index is
+strict UTF-8 JSON, rejects non-finite numbers, must satisfy the existing index
+normalization, and its captured bytes must exactly equal canonical index bytes.
+Because the index is intentionally not self-indexed, it is retained as snapshot
+metadata rather than an indexed evidence object.
+
+After the canonical index exists, the already-captured `run.json` bytes are
+bound to its declared entry, fingerprinted, sealed, and cached without reopening
+the live path. A mismatch fails closed. Every other index entry is then acquired
+exactly once in canonical path order through the Stage 6.2b handle-bound engine.
+The classifier is deliberately narrow:
+
+- the nine core semantic filenames use `memory`;
+- a non-core entry carrying the existing `metric_source` role uses `spool`;
+- every other entry uses `integrity_only`.
+
+Core JSON and resolved YAML records are parsed only through retained snapshot
+readers. The parsed-record cache contains `run.json`, `source.json`,
+`environment.json`, `inputs.json`, `commands.json`, `artifacts.json`,
+`metrics.json`, `manifest.resolved.yaml`, and `metric_sources.json`. Invalid
+UTF-8, malformed JSON/YAML, non-finite JSON values, or an incorrect top-level
+container abort construction before the snapshot can be completed or sealed.
+
+Only after all indexed entries have matching fingerprints, every object is
+sealed, and all required core records are cached does the builder complete and
+seal the snapshot. The established root remains:
+
+```text
+SHA256(exact canonical captured evidence.index.json bytes)
+```
+
+This is a same-indexed-logical-byte snapshot, not a filesystem-atomic directory
+snapshot. Once construction succeeds, cached core records and retained memory
+or metric-source spool bytes are independent of the live bundle and its producer
+location. Integrity-only payload bytes are intentionally unavailable to semantic
+consumers. Root or file identity instability causes one fail-closed attempt;
+there is no retry, restart, fallback, or switch to a replacement root.
+
 ## Assurance boundary
 
 The eventual invariant is that canonical verification semantics and report
 content consume retained snapshot representations, never reopened live bundle
-paths. Stages 6.2a and 6.2b do not yet establish that invariant in the production
-verifier. They add no assurance level, schema field, evidence-root change, CLI
-behavior, or report behavior.
+paths. Stage 6.2c establishes this invariant only inside its separately testable
+builder; the production verifier does not consume the builder yet. Stages
+6.2a-c add no assurance level, schema field, evidence-root change, CLI behavior,
+or report behavior.
 
 The model claims one coherent logical byte snapshot described by one captured
 index. It does not claim a filesystem-atomic whole-directory snapshot or that
@@ -133,7 +184,7 @@ all pathnames physically coexisted at one instant. Producer authenticity,
 trusted execution, signing, attestation, independent replay, and scientific
 reproduction remain not established.
 
-Deferred to separately approved substages are bootstrap and index-wide snapshot
-construction, snapshot-backed metric extraction, verifier/report integration,
-and bundle-root identity checks before writing derived outputs. Consequently,
-the production verifier's known TOCTOU issue is **not fixed by Stage 6.2b**.
+Deferred to separately approved substages are snapshot-backed metric extraction,
+production verifier/report session integration, and bundle-root identity checks
+before writing derived outputs. Consequently, the production verifier's known
+TOCTOU issue and H1 remain open after Stage 6.2c.

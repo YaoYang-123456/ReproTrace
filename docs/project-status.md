@@ -233,6 +233,43 @@ POSIX-only parent symlink，以及 Windows `os.open` 共享模式无法实际执
 taxonomy 或 evidence-root 公式，因此生产 verifier 的 H1/TOCTOU 仍保持 open，等待单独批准
 Stage 6.2c 及后续集成。
 
+## C5.0 Stage 6.2c schema-1 verified snapshot construction
+
+Stage 6.2c 在同一 `codex/c5.0-snapshot-identity` 分支新增独立、尚未接入生产 verifier 的
+schema-1 snapshot builder：
+
+- bundle root structured identity 只捕获一次，`run.json` 与 `evidence.index.json` 各经共享的
+  handle-bound engine 读取一次；schema 0 在读取 index 前以 not-applicable 停止；
+- captured index 必须是 strict UTF-8、无 NaN/Infinity 且逐字节 canonical 的现有 schema 1
+  index；candidate root 仍是 exact canonical index bytes 的 SHA-256；
+- 已捕获的 `run.json` bytes 直接绑定其 index entry，不重新打开 live path；其余 entry 按
+  canonical path order 各采集一次，且全部复用同一个 session root identity；
+- 九个 core semantic filenames 使用 immutable memory retention；非 core 且带既有
+  `metric_source` role 的 entry 使用 verifier-owned spool；其余 entry 仅保留 integrity state；
+- 九个 core record 只从 retained snapshot bytes 解析并缓存；JSON/YAML 语法、UTF-8、
+  non-finite JSON 或根容器错误均在 complete/seal 前 fail closed；
+- 只有所有 indexed bytes 通过 size/SHA-256、所有对象 seal 且 core cache 完整后，candidate
+  root 才成为 established root。成功后的 memory/spool 语义不依赖 live bundle 或 producer
+  原路径。
+
+该模型只声明 same indexed logical byte snapshot，不声明 filesystem-atomic directory snapshot。
+本阶段没有改动 `verify_bundle`、metric extraction、report、CLI、schema、assurance taxonomy、
+root 公式或 derived-output 写入，因此生产 H1/TOCTOU 仍未关闭；snapshot-backed metric
+extraction、生产 verifier/report session 集成与 root-identity safe-write 继续等待独立批准。
+
+2026-08-08 本地 Windows 验证结果：Stage 6.2c builder 专项 `28 passed`；Stage 6.2b
+acquisition 回归 `17 passed, 4 skipped`；Stage 6.2a snapshot model 回归 `16 passed`；
+Stage 6.1 assurance/manifest 回归 `86 passed`。默认编码与 `python -X utf8=0`
+（`encoding=cp1252`）完整套件均为 `257 passed, 8 skipped`。8 个 skip 均为既有平台条件：
+Windows 当前用户缺少普通 file/directory symlink 权限、一个 POSIX-only parent-symlink 场景，
+以及 Windows 打开文件共享模式不允许 post-open rename；Windows junction tests 实际执行。
+
+真实 tiny CPU bundle 随后由 Stage 6.2c builder 成功构造 `sealed` snapshot：16 个 index entries
+全部获取，九个 core records 全部缓存，raw metric source 从私有 spool 可读；established root
+`d4a6e3d6eda7f338d74206c239c00bc6783b929da08b3a1e2a12418c2bfe621a` 与现有 production
+verification root 相同。`compileall` 与 `git diff --check` 均通过；未使用 GPU、训练、网络或
+PEFT-ViT。
+
 ## C4 source evidence
 
 C3 验证期间确认：Windows 默认 cp1252 Python 环境在解码包含中文 UTF-8

@@ -547,6 +547,7 @@ class VerifiedBundleSnapshot:
         self._parsed_records: dict[str, Any] = {}
         self._state = SnapshotState.NEW
         self._session_claimed = False
+        self._session_active = False
         self._session_closed = False
         self._cleanup_diagnostics: list[CleanupDiagnostic] = []
 
@@ -591,6 +592,10 @@ class VerifiedBundleSnapshot:
     @property
     def session_claimed(self) -> bool:
         return self._session_claimed
+
+    @property
+    def session_active(self) -> bool:
+        return self._session_active and not self._session_closed
 
     @property
     def objects(self) -> Mapping[str, VerifiedEvidenceObject]:
@@ -704,9 +709,15 @@ class VerifiedBundleSnapshot:
             raise SnapshotStateError("verified snapshot already has an owning session")
         self._session_claimed = True
 
+    def _activate_session(self) -> None:
+        if self._session_closed:
+            raise SnapshotStateError("closed verification session cannot be activated")
+        self._session_active = True
+
     def _release_resources(self) -> tuple[CleanupDiagnostic, ...]:
         if self._session_closed:
             return tuple(self._cleanup_diagnostics)
+        self._session_active = False
         self._session_closed = True
         for path in sorted(self._objects):
             try:
@@ -746,6 +757,7 @@ class VerificationSession:
     def __enter__(self) -> VerificationSession:
         if self._state is SessionState.CLOSED:
             raise SnapshotStateError("closed verification session cannot be reopened")
+        self._snapshot._activate_session()
         self._state = SessionState.OPEN
         return self
 

@@ -12,6 +12,7 @@ from reprotrace.acquisition import (
     EvidenceAcquisitionError,
     _AcquisitionTestHooks,
     acquire_bundle_evidence,
+    capture_bundle_file_once,
     capture_bundle_root_identity,
 )
 from reprotrace.evidence import canonical_evidence_index_bytes
@@ -104,6 +105,47 @@ def test_normal_memory_acquisition_uses_retained_bytes(tmp_path: Path) -> None:
         evidence.seal()
         with evidence.open_reader() as reader:
             assert reader.read() == value
+
+
+def test_bootstrap_capture_returns_exact_immutable_handle_bound_bytes(
+    tmp_path: Path,
+) -> None:
+    root = tmp_path / "bootstrap"
+    root.mkdir()
+    candidate = root / "run.json"
+    value = b'{"schema_version":1}\x00\xff'
+    candidate.write_bytes(value)
+    root_identity = capture_bundle_root_identity(root)
+
+    captured = capture_bundle_file_once(
+        bundle_root=root,
+        expected_root_identity=root_identity,
+        relative_path="run.json",
+        chunk_size=3,
+    )
+
+    assert captured.relative_path == "run.json"
+    assert captured.exact_bytes == value
+    assert isinstance(captured.exact_bytes, bytes)
+    assert captured.observed_fingerprint.size_bytes == len(value)
+    assert captured.observed_fingerprint.sha256 == sha256_bytes(value)
+    assert captured.file_identity.available is True
+    assert captured.root_identity == root_identity
+
+
+def test_acquisition_rejects_claimed_but_inactive_session(tmp_path: Path) -> None:
+    root, _, snapshot, evidence, session = make_owned_evidence(tmp_path)
+
+    with pytest.raises(SnapshotStateError, match="active verification session"):
+        acquire_bundle_evidence(
+            bundle_root=root,
+            snapshot=snapshot,
+            evidence=evidence,
+        )
+
+    assert session.state is SessionState.NEW
+    assert evidence.state is EvidenceObjectState.NEW
+    session.close()
 
 
 def test_normal_spool_acquisition_streams_exact_bytes(tmp_path: Path) -> None:

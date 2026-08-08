@@ -15,8 +15,10 @@ from typing import Any
 
 from .errors import ConfigError
 from .evidence import normalize_bundle_path, resolve_bundle_file
+from .io import sha256_bytes
 from .snapshot import (
     BundleRootIdentity,
+    EvidenceFingerprint,
     EvidenceObjectState,
     FileIdentity,
     SnapshotStateError,
@@ -34,7 +36,19 @@ class EvidenceAcquisitionError(SnapshotStateError):
     def __init__(self, category: str, detail: str) -> None:
         self.category = category
         self.detail = detail
+        self.secondary_diagnostics: list[str] = []
         super().__init__(f"{category}: {detail}")
+
+
+@dataclass(frozen=True, slots=True)
+class CapturedBundleFile:
+    """One memory-only bootstrap capture with no live-path semantic API."""
+
+    relative_path: str
+    exact_bytes: bytes
+    observed_fingerprint: EvidenceFingerprint
+    file_identity: FileIdentity
+    root_identity: BundleRootIdentity
 
 
 @dataclass(slots=True)
@@ -200,29 +214,25 @@ def _run_hook(callback: Callable[..., None] | None, *args: Any) -> None:
         callback(*args)
 
 
-def _acquire_owned_evidence(
+def _stream_handle_bound_file(
     *,
     bundle_root: str | os.PathLike[str],
-    snapshot: VerifiedBundleSnapshot,
-    evidence: VerifiedEvidenceObject,
+    expected_root: BundleRootIdentity,
+    relative_path: str,
     chunk_size: int,
     hooks: _AcquisitionTestHooks,
-) -> None:
-    expected_root = snapshot.root_metadata.identity
-    if expected_root is None:
-        raise EvidenceAcquisitionError(
-            "identity_unavailable",
-            "snapshot has no captured bundle root identity",
-        )
+    begin_capture: Callable[[FileIdentity], None],
+    consume_chunk: Callable[[bytes], None],
+) -> FileIdentity:
+    """Run one shared pre/open/fstat/post/read descriptor pipeline."""
+
     root = _validate_root(bundle_root, expected_root)
-    relative_path = normalize_bundle_path(
-        evidence.relative_path,
-        label="snapshot evidence",
-    )
+    relative_path = normalize_bundle_path(relative_path, label="snapshot evidence")
     candidate, preopen_identity = _inspect_candidate(root, relative_path)
     _run_hook(hooks.after_precheck, candidate)
 
     descriptor = _open_read_only(candidate, relative_path)
+    primary_error: BaseException | None = None
     try:
         opened_identity = _opened_file_identity(descriptor, relative_path)
         if opened_identity != preopen_identity:
@@ -240,7 +250,7 @@ def _acquire_owned_evidence(
                 "post-open path identity differs from the opened file identity",
             )
 
-        evidence.begin_acquisition(identity=opened_identity)
+        begin_capture(opened_identity)
         _run_hook(hooks.before_stream_read, descriptor)
         while True:
             try:
@@ -263,32 +273,64 @@ def _acquire_owned_evidence(
             if not chunk:
                 break
             try:
-                evidence.append_acquired_bytes(chunk)
+                consume_chunk(chunk)
             except OSError as exc:
                 raise EvidenceAcquisitionError(
                     "retention_failed",
                     f"snapshot retention failed for {relative_path}: {exc}",
                 ) from exc
-        try:
-            evidence.finish_acquisition()
-        except OSError as exc:
-            raise EvidenceAcquisitionError(
-                "retention_failed",
-                f"snapshot retention finalization failed for {relative_path}: {exc}",
-            ) from exc
-        except SnapshotStateError as exc:
-            raise EvidenceAcquisitionError(
-                "fingerprint_mismatch",
-                f"acquired bytes do not match the index for {relative_path}",
-            ) from exc
+        return opened_identity
+    except BaseException as exc:
+        primary_error = exc
+        raise
     finally:
         try:
             os.close(descriptor)
         except OSError as exc:
-            raise EvidenceAcquisitionError(
-                "descriptor_close_failed",
-                f"cannot close evidence descriptor for {relative_path}: {exc}",
-            ) from exc
+            diagnostic = f"descriptor close failed for {relative_path}: {exc}"
+            if isinstance(primary_error, EvidenceAcquisitionError):
+                primary_error.secondary_diagnostics.append(diagnostic)
+            elif primary_error is None:
+                raise EvidenceAcquisitionError(
+                    "descriptor_close_failed",
+                    diagnostic,
+                ) from exc
+
+
+def capture_bundle_file_once(
+    *,
+    bundle_root: str | os.PathLike[str],
+    expected_root_identity: BundleRootIdentity,
+    relative_path: str,
+    chunk_size: int = DEFAULT_ACQUISITION_CHUNK_SIZE,
+    _hooks: _AcquisitionTestHooks | None = None,
+) -> CapturedBundleFile:
+    """Capture one bootstrap file into exact immutable memory bytes."""
+
+    if isinstance(chunk_size, bool) or not isinstance(chunk_size, int) or chunk_size <= 0:
+        raise ValueError("acquisition chunk_size must be a positive integer")
+    normalized = normalize_bundle_path(relative_path, label="bootstrap evidence")
+    retained = bytearray()
+    identity = _stream_handle_bound_file(
+        bundle_root=bundle_root,
+        expected_root=expected_root_identity,
+        relative_path=normalized,
+        chunk_size=chunk_size,
+        hooks=_hooks or _AcquisitionTestHooks(),
+        begin_capture=lambda opened_identity: None,
+        consume_chunk=retained.extend,
+    )
+    exact_bytes = bytes(retained)
+    return CapturedBundleFile(
+        relative_path=normalized,
+        exact_bytes=exact_bytes,
+        observed_fingerprint=EvidenceFingerprint(
+            len(exact_bytes),
+            sha256_bytes(exact_bytes),
+        ),
+        file_identity=identity,
+        root_identity=expected_root_identity,
+    )
 
 
 def acquire_bundle_evidence(
@@ -308,9 +350,9 @@ def acquire_bundle_evidence(
 
     if isinstance(chunk_size, bool) or not isinstance(chunk_size, int) or chunk_size <= 0:
         raise ValueError("acquisition chunk_size must be a positive integer")
-    if not snapshot.session_claimed or snapshot.session_closed:
+    if not snapshot.session_claimed or not snapshot.session_active:
         raise SnapshotStateError(
-            "snapshot must belong to an open verification session before acquisition"
+            "snapshot must belong to an active verification session before acquisition"
         )
     if snapshot.objects.get(evidence.relative_path) is not evidence:
         raise SnapshotStateError(
@@ -323,13 +365,35 @@ def acquire_bundle_evidence(
 
     hooks = _hooks or _AcquisitionTestHooks()
     try:
-        _acquire_owned_evidence(
+        expected_root = snapshot.root_metadata.identity
+        if expected_root is None:
+            raise EvidenceAcquisitionError(
+                "identity_unavailable",
+                "snapshot has no captured bundle root identity",
+            )
+        _stream_handle_bound_file(
             bundle_root=bundle_root,
-            snapshot=snapshot,
-            evidence=evidence,
+            expected_root=expected_root,
+            relative_path=evidence.relative_path,
             chunk_size=chunk_size,
             hooks=hooks,
+            begin_capture=lambda identity: evidence.begin_acquisition(
+                identity=identity
+            ),
+            consume_chunk=evidence.append_acquired_bytes,
         )
+        try:
+            evidence.finish_acquisition()
+        except OSError as exc:
+            raise EvidenceAcquisitionError(
+                "retention_failed",
+                f"snapshot retention finalization failed for {evidence.relative_path}: {exc}",
+            ) from exc
+        except SnapshotStateError as exc:
+            raise EvidenceAcquisitionError(
+                "fingerprint_mismatch",
+                f"acquired bytes do not match the index for {evidence.relative_path}",
+            ) from exc
     except Exception as exc:
         if evidence.state is not EvidenceObjectState.SEALED:
             detail = str(exc)
