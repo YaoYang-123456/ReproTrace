@@ -74,7 +74,10 @@ an approximate protocol into a strict paper reproduction.
 
 See [the v0 design note](docs/design-v0.md) for the current scope and decisions.
 The canonical C5 verification vocabulary and its explicit limitations are
-defined in [the assurance contract](docs/assurance-contract-v1.md).
+defined in [the assurance contract](docs/assurance-contract-v1.md). The
+bundle-safe path rules and canonical index format are defined in
+[the evidence index specification](docs/evidence-index-v1.md); current runner
+bundles do not emit that index or claim bundle-integrity assurance yet.
 
 ## Development
 

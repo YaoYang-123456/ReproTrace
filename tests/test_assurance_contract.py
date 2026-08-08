@@ -189,6 +189,7 @@ def test_schema_one_verification_skeleton_preserves_legacy_fields(tmp_path: Path
     assert verification["passed"] is True
     assert verification["preflight_passed"] is None
     assert (run_dir / "verification.json").is_file()
+    assert not (run_dir / "evidence.index.json").exists()
 
 
 def test_dry_run_is_not_an_execution_failure(tmp_path: Path) -> None:

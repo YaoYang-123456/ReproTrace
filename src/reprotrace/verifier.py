@@ -5,7 +5,7 @@ from __future__ import annotations
 import math
 import os
 import stat
-from pathlib import Path, PurePosixPath, PureWindowsPath
+from pathlib import Path
 from typing import Any
 
 import yaml
@@ -19,6 +19,7 @@ from .assurance import (
     coverage_skeleton,
     recorded_execution_status,
 )
+from .evidence import resolve_bundle_file
 from .errors import ConfigError
 from .io import comparison_key, fingerprint, read_json, read_source_record, sha256_file, utc_now, write_json
 from .manifest import validate_manifest
@@ -59,31 +60,15 @@ def _check_fingerprint(record: dict[str, Any], check_id: str, category: str) -> 
     }
 
 
-def _validated_source_path(directory: Path, value: Any, label: str) -> Path:
-    if not isinstance(value, str) or not value:
-        raise ConfigError(f"invalid {label} path in source.json; expected a non-empty relative path")
-    posix_path = PurePosixPath(value)
-    windows_path = PureWindowsPath(value)
-    if posix_path.is_absolute() or windows_path.is_absolute() or windows_path.drive:
-        raise ConfigError(f"invalid {label} path in source.json; absolute paths are not allowed: {value!r}")
-    if ".." in posix_path.parts or ".." in windows_path.parts:
-        raise ConfigError(f"invalid {label} path in source.json; parent traversal is not allowed: {value!r}")
-    try:
-        bundle_root = directory.resolve(strict=True)
-        candidate = directory / Path(value)
-        resolved = candidate.resolve(strict=False)
-        resolved.relative_to(bundle_root)
-    except (OSError, RuntimeError, ValueError) as exc:
-        raise ConfigError(f"invalid {label} path in source.json; path escapes the evidence bundle: {value!r}") from exc
-    if candidate.is_symlink():
-        raise ConfigError(f"invalid {label} file in evidence bundle; expected a regular file: {candidate}")
-    return candidate
-
-
 def _check_source_file(directory: Path, metadata: Any, check_id: str, label: str) -> dict[str, Any]:
     if not isinstance(metadata, dict):
         raise ConfigError(f"invalid source.json; {label} metadata must be an object")
-    candidate = _validated_source_path(directory, metadata.get("path"), label)
+    candidate = resolve_bundle_file(
+        directory,
+        metadata.get("path"),
+        label=label,
+        allow_missing=True,
+    )
     recorded = {key: metadata.get(key) for key in ("size_bytes", "sha256")}
     if not candidate.exists():
         return {

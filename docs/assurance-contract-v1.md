@@ -32,8 +32,9 @@ resolved manifest. A valid zero-metric experiment stops at
 `bundle_integrity_checked` without failing verification.
 
 Stage 1 defines this hierarchy but conservatively assigns existing schema-0
-bundles only `recorded`. Evidence indexing is Stage 2 and raw metric derivation is
-Stage 3/4.
+bundles only `recorded`. Stage 2 adds canonical evidence-index primitives but
+does not yet connect production bundles to a complete indexed closure, so those
+bundles remain `recorded`. Raw metric derivation is Stage 3/4.
 
 ## Orthogonal canonical fields
 
