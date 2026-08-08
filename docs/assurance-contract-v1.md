@@ -142,9 +142,11 @@ The legacy `checks` list likewise remains separate from canonical
 `contract_checks` and cannot determine `verification_status` or
 `checks_passed`.
 
-During Stage 1 the existing CLI and report still consume these fields. Their
-canonical presentation and exit-code migration is explicitly deferred to Stage
-5; the compatibility fields are not a source for new verification logic.
+Stage 5 CLI and report presentation uses canonical fields as the primary user
+conclusion. Deprecated fields remain available in JSON and a clearly labeled
+compatibility section, but they are not a source for schema-1 assurance or report
+headlines. Schema-0 CLI exits may retain the legacy compatibility policy without
+promoting the canonical `recorded`/`not_evaluated` result.
 
 Legacy bundle schema 0 never exceeds `recorded`, and its canonical
 `result_status` is `not_evaluated`, even if a historical compatibility field says
@@ -160,3 +162,19 @@ contract.
 
 Therefore C5 assurance never establishes execution authenticity, independent
 replay, or scientific reproduction.
+
+## Presentation and exit policy
+
+Human CLI and report output must display verification completeness, canonical
+checks, assurance, recorded execution, and declared result independently. A
+complete `metric_derivations_recomputed` bundle may legitimately have
+`result_status=not_matched`; this is not a verification failure. CLI exit `1`
+still communicates that the requested declared result was not met.
+
+Schema-1 run/verify/report exits are derived from canonical checks, recorded
+execution status, and result status rather than deprecated `passed`. Dry-run
+continues to use preflight compatibility semantics because source-policy
+preflight is intentionally part of that established workflow. Reports are
+regenerated from a fresh verifier result and bind their displayed evidence root
+to that result. A null root is displayed as `NOT VERIFIED`, never as a valid
+digest.

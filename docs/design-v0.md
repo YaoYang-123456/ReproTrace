@@ -18,15 +18,28 @@ schema, but no project name is hard-coded into the implementation.
 - `verify`: for run schema 1, validate the bundle-local indexed dependency
   closure, recompute metrics from indexed raw evidence, and evaluate declared
   tolerances from the resolved manifest. Legacy schema 0 remains readable
-  without dereferencing recorded input/artifact origin paths. Exit `0` means
-  pass, `1` means mismatch, and `2` means invalid evidence or configuration.
+  without dereferencing recorded input/artifact origin paths. Human output
+  presents verification completeness, assurance, recorded execution, and the
+  declared result as separate dimensions. JSON output retains compatibility
+  fields but canonical fields are authoritative.
 - `diff`: compare two bundles across source, environment, inputs, commands,
   artifacts, and metrics.
-- `report`: regenerate a readable Markdown report from machine-readable files.
+- `report`: refresh canonical verification and regenerate a readable Markdown
+  report from that fresh verifier result. `report.md` remains outside the
+  evidence index to avoid self-reference.
 
 `run --dry-run` resolves commands and checks source and input prerequisites
 without launching the experiment. A successful preflight exits `0`, but its
 evidence status remains `planned`; it is not a reproduced result.
+
+For non-dry schema-1 commands, exit `0` requires complete canonical checks, a
+recorded successful command outcome, and a `matched` or non-applicable declared
+result. Exit `1` covers integrity/derivation failure, recorded command failure,
+`not_matched`, and `indeterminate`. Invalid configuration or evidence exits `2`.
+Expectation mismatch does not change verification completeness or assurance,
+even though the command exits `1` because the requested declared result was not
+met. Schema-0 bundles retain their compatibility exit policy while presenting
+only `recorded` assurance and `not_evaluated` result status.
 
 Relative evidence output roots are resolved from the manifest directory. Before
 creating a bundle, ReproTrace captures the source state and rejects an unignored
@@ -49,6 +62,13 @@ Metric values are recomputed from the ordered `metric_sources.json` evidence
 paths, compared strictly with cached derived values, and then compared with the
 resolved manifest's expected value and scientific tolerances. Expectation
 mismatch changes `result_status`, not verification completeness or assurance.
+
+Reports consume this same verifier result rather than re-extracting metrics.
+Their metric table separates recorded and recomputed values, and their check
+tables separate canonical structure/integrity/derivation checks from recorded
+outcome and expectation compatibility checks. Coverage explicitly distinguishes
+bundle-local evidence from external metadata-only records. No presentation
+claims execution authenticity, independent replay, or scientific reproduction.
 
 ## Source evidence format
 

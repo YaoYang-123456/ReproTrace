@@ -225,7 +225,7 @@ def run_manifest(
             ),
         )
         verification = verify_bundle(run_dir)
-        generate_report(run_dir)
+        generate_report(run_dir, _verification=verification)
         return run_dir, verification
 
     commands = _execute_commands(manifest, context, run_dir)
@@ -262,5 +262,5 @@ def run_manifest(
         ),
     )
     verification = verify_bundle(run_dir)
-    generate_report(run_dir)
+    generate_report(run_dir, _verification=verification)
     return run_dir, verification

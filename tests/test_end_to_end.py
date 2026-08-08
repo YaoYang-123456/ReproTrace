@@ -100,7 +100,12 @@ def test_tiny_run_creates_passing_bundle(tmp_path: Path) -> None:
     assert not (run_dir / "raw" / "metrics").exists()
     assert (run_dir / "commands.jsonl").is_file()
     assert (run_dir / "report.md").is_file()
-    assert "Decision:** `passed`" in (run_dir / "report.md").read_text(encoding="utf-8")
+    report = (run_dir / "report.md").read_text(encoding="utf-8")
+    assert "**Verification:** `COMPLETE`" in report
+    assert "**Checks:** `PASS`" in report
+    assert "**Assurance:** `metric_derivations_recomputed`" in report
+    assert "**Declared result:** `matched`" in report
+    assert "Decision:" not in report
 
 
 def test_tampered_artifact_fails_verification(tmp_path: Path) -> None:

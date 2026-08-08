@@ -71,6 +71,34 @@ symlink 创建权限；Windows junction 逃逸测试实际执行并通过。真�
 - CSV 与日志正则指标提取；
 - source ref 预检失败。
 
+## C5 Stage 4.1 declaration closure 与 Stage 5 presentation
+
+Stage 4.1 已关闭 manifest declaration false-uplift 路径：schema-1 verifier 以
+`manifest.resolved.yaml` 为 input 与 artifact declaration authority，拒绝记录缺失、额外、
+重复以及 declaration 字段修改。即使攻击者同步重建 records 与 evidence index，也不能删除
+manifest 声明并继续获得 bundle integrity assurance。`{run_dir}` artifact 不能谎报为 external；
+正常运行中 artifact pattern 合法匹配零文件不属于 canonical schema failure。
+
+Stage 5 将 Stage 1–4 的现有语义呈现到 CLI 与 `report.md`，不新增 assurance 能力：
+
+- CLI/report 分开显示 `verification_status`、`checks_passed`、`assurance_level`、
+  `execution_record_status` 和 `result_status`；不再以 deprecated `passed` 作为 schema-1 主结论；
+- `verification=complete`、checks PASS 与 `result_status=not_matched` 可以同时成立；CLI 因声明目标
+  未达到返回 1，但不会把 expectation miss 写成 verification failure；
+- report metric 表从同一 verifier result 展示 recorded/recomputed actual、manifest expected、
+  tolerance 与结果，不运行第二套 extraction；
+- report 明确展示 coverage、metadata-only 边界，以及 execution authenticity、independent replay、
+  scientific reproduction 均未建立；
+- `reprotrace report` 在写报告前重新运行 `verify_bundle()`，tamper 后不会沿用 stale 成功结论；
+- legacy schema 0 顶部固定保守呈现 `assurance=recorded`、`result=not_evaluated`，旧
+  `status/passed/preflight_passed` 只在 compatibility 区保留。
+
+本阶段基线为分支 `codex/c5.0-assurance-verifier`、HEAD
+`81238fb2079f2ad9147a2291300e94d878991ddf`。Stage 5 targeted tests 为
+`16 passed`；默认编码与 `python -X utf8=0` 完整测试均为 `162 passed, 4 skipped`。
+四个 skip 仍仅因当前 Windows 账户无普通 symlink 创建权限，Windows junction 两项测试实际
+执行并通过。未启动 PEFT-ViT、训练或 GPU。
+
 ## C4 source evidence
 
 C3 验证期间确认：Windows 默认 cp1252 Python 环境在解码包含中文 UTF-8
@@ -197,4 +225,6 @@ Windows 本地已验证 Git 接受 `/dev/null` 作为空 order file；Linux 与 
 
 ## 下一步
 
-下一步是在独立 PEFT-ViT 环境中继续处理正式 GPU 运行前的阻塞项：seed、CIFAR-100 预置与哈希、DINO revision 和 precision。所有阻塞项关闭并单独确认 GPU 实验方案前，不启动训练。
+下一步仅在人工批准后进入 Stage 6：adversarial suite、文档、跨平台 CI 与最终验收。
+PEFT-ViT 正式 GPU 阻塞项仍为 seed、CIFAR-100 预置与哈希、DINO revision 和
+precision；所有阻塞项关闭并单独确认 GPU 实验方案前，不启动训练。
