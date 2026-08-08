@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import shutil
 import sys
 from pathlib import Path
@@ -415,7 +416,9 @@ def test_index_role_mismatch_fails_exact_evidence_closure(tmp_path: Path) -> Non
 
 
 @pytest.mark.parametrize("action", ["missing", "modified"])
-def test_v5_command_log_integrity_is_required(tmp_path: Path, action: str) -> None:
+def test_a1_a2_forged_success_or_tampered_command_log_cannot_raise_assurance(
+    tmp_path: Path, action: str
+) -> None:
     run_dir, _ = run_manifest(make_manifest(tmp_path / "project", metrics=False))
     log = run_dir / "logs" / "produce.stdout.log"
     if action == "missing":
@@ -426,9 +429,16 @@ def test_v5_command_log_integrity_is_required(tmp_path: Path, action: str) -> No
     verification = verify_bundle(run_dir, write=False)
 
     assert check_by_id(verification, "closure:command-log:produce:stdout")["passed"] is False
+    assert verification["execution_record_status"] == "recorded_success"
     assert verification["assurance_level"] == "recorded"
     assert verification["verification_status"] == "incomplete"
+    assert verification["checks_passed"] is False
     assert verification["evidence_root_sha256"] is None
+    assert verification["not_established"] == {
+        "execution_authenticity": "not_established",
+        "independent_replay": "not_performed",
+        "scientific_reproduction": "not_established",
+    }
 
 
 def test_v6_zero_metric_bundle_has_integrity_assurance(tmp_path: Path) -> None:
@@ -552,6 +562,132 @@ def test_v11_derived_actual_uses_strict_not_scientific_tolerance(tmp_path: Path)
     assert check_by_id(verification, "metric:score:derived-match")["passed"] is False
     assert verification["assurance_level"] == "bundle_integrity_checked"
     assert verification["result_status"] == "indeterminate"
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [("expected", 4.0), ("atol", 1.0), ("rtol", 0.25)],
+)
+def test_a6_resolved_protocol_tamper_with_valid_rehash_fails_derived_consistency(
+    tmp_path: Path, field: str, value: float
+) -> None:
+    run_dir, _ = run_manifest(make_manifest(tmp_path / "project"))
+    resolved_path = run_dir / "manifest.resolved.yaml"
+    resolved = yaml.safe_load(resolved_path.read_text(encoding="utf-8"))
+    resolved["metrics"][0][field] = value
+    resolved_path.write_text(
+        yaml.safe_dump(resolved, sort_keys=False), encoding="utf-8"
+    )
+    refresh_index(run_dir)
+
+    verification = verify_bundle(run_dir, write=False)
+
+    assert check_by_id(verification, "bundle:index")["passed"] is True
+    assert check_by_id(verification, "bundle:closure")["passed"] is True
+    assert all(
+        check["passed"]
+        for check in verification["contract_checks"]
+        if check["kind"] == "integrity"
+    )
+    assert check_by_id(verification, "metric:score:derived-match")["passed"] is False
+    assert verification["verification_status"] == "incomplete"
+    assert verification["checks_passed"] is False
+    assert verification["assurance_level"] == "bundle_integrity_checked"
+    assert verification["result_status"] == "indeterminate"
+    assert verification["evidence_root_sha256"] is not None
+
+
+def test_coherent_producer_forgery_is_an_explicit_undetectable_boundary(
+    tmp_path: Path,
+) -> None:
+    run_dir, _ = run_manifest(make_manifest(tmp_path / "project"))
+
+    raw = run_dir / "artifacts" / "metrics.csv"
+    raw.write_text("score\n4.0\n", encoding="utf-8")
+    size_bytes = raw.stat().st_size
+    digest = sha256_file(raw)
+
+    metric_sources = read_json(run_dir / "metric_sources.json")
+    metric_source = metric_sources["metrics"][0]["sources"][0]
+    metric_source.update(
+        size_bytes=size_bytes,
+        sha256=digest,
+        origin_path="C:/forged/project/metrics.csv",
+    )
+    write_json(run_dir / "metric_sources.json", metric_sources)
+
+    artifacts = read_json(run_dir / "artifacts.json")
+    artifacts[0]["matches"][0].update(
+        size_bytes=size_bytes,
+        sha256=digest,
+        path="C:/forged/project/metrics.csv",
+    )
+    write_json(run_dir / "artifacts.json", artifacts)
+
+    metrics = read_json(run_dir / "metrics.json")
+    metrics[0].update(
+        actual=4.0,
+        expected=4.0,
+        absolute_error=0.0,
+        passed=True,
+        source_paths=["C:/forged/project/metrics.csv"],
+    )
+    write_json(run_dir / "metrics.json", metrics)
+
+    resolved_path = run_dir / "manifest.resolved.yaml"
+    resolved = yaml.safe_load(resolved_path.read_text(encoding="utf-8"))
+    resolved["project"]["root"] = "C:/forged/project"
+    resolved["run"]["output_root"] = "C:/forged/output"
+    resolved["metrics"][0]["expected"] = 4.0
+    resolved_path.write_text(
+        yaml.safe_dump(resolved, sort_keys=False), encoding="utf-8"
+    )
+
+    commands = read_json(run_dir / "commands.json")
+    commands[0].update(
+        cwd="C:/forged/project",
+        started_at="forged-start",
+        finished_at="forged-finish",
+        elapsed_seconds=1.0,
+        status="completed",
+        return_code=0,
+    )
+    write_json(run_dir / "commands.json", commands)
+    (run_dir / "commands.jsonl").write_text(
+        "".join(json.dumps(command, sort_keys=True) + "\n" for command in commands),
+        encoding="utf-8",
+    )
+    (run_dir / "logs" / "produce.stdout.log").write_text(
+        "forged stdout\n", encoding="utf-8"
+    )
+    (run_dir / "logs" / "produce.stderr.log").write_text(
+        "forged stderr\n", encoding="utf-8"
+    )
+
+    inputs = read_json(run_dir / "inputs.json")
+    inputs[0]["path"] = "C:/forged/project/input.txt"
+    write_json(run_dir / "inputs.json", inputs)
+    environment = read_json(run_dir / "environment.json")
+    environment["platform"] = "forged-platform"
+    write_json(run_dir / "environment.json", environment)
+    run = read_json(run_dir / "run.json")
+    run["project_root"] = "C:/forged/project"
+    write_json(run_dir / "run.json", run)
+    refresh_index(run_dir)
+
+    verification = verify_bundle(run_dir, write=False)
+
+    assert verification["verification_status"] == "complete"
+    assert verification["checks_passed"] is True
+    assert verification["assurance_level"] == "metric_derivations_recomputed"
+    assert verification["execution_record_status"] == "recorded_success"
+    assert verification["result_status"] == "matched"
+    assert verification["evidence_root_sha256"] is not None
+    assert verification["not_established"] == {
+        "execution_authenticity": "not_established",
+        "independent_replay": "not_performed",
+        "scientific_reproduction": "not_established",
+    }
 
 
 def test_derived_sample_count_rejects_json_boolean_alias(tmp_path: Path) -> None:

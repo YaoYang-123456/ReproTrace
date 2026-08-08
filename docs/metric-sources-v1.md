@@ -91,3 +91,11 @@ Stage 3 snapshots one observed byte sequence and derives the metric from that
 same bundle-local sequence. It does not claim protection against a malicious
 producer or all origin-side TOCTOU races, signing, attestation, replay, or trusted
 execution.
+
+C5 adversarial tests distinguish two useful failure layers. Changing cached
+`metrics.json` while leaving raw sources intact passes byte-integrity checks but
+fails exact derivation comparison. Changing raw sources and rebuilding their
+metadata/index while leaving cached metrics intact also passes byte-integrity
+checks but fails verifier re-extraction. Coherently changing both sides and all
+producer-controlled declarations remains outside the threat model. The exact
+cases are mapped in [the adversarial acceptance matrix](adversarial-acceptance.md).

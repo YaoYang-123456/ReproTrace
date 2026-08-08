@@ -163,6 +163,9 @@ contract.
 Therefore C5 assurance never establishes execution authenticity, independent
 replay, or scientific reproduction.
 
+The executable A1–A7 threat cases and the coherent-forgery boundary fixture are
+mapped in [the C5 adversarial acceptance matrix](adversarial-acceptance.md).
+
 ## Presentation and exit policy
 
 Human CLI and report output must display verification completeness, canonical

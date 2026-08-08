@@ -70,6 +70,23 @@ outcome and expectation compatibility checks. Coverage explicitly distinguishes
 bundle-local evidence from external metadata-only records. No presentation
 claims execution authenticity, independent replay, or scientific reproduction.
 
+## Adversarial verification boundary
+
+C5 regression coverage deliberately separates byte integrity, derivation
+consistency, and producer authenticity. It detects missing or unindexed command
+logs, indexed-byte tampering, disagreement between raw metric evidence and
+cached derived metrics, resolved-protocol changes that invalidate cached
+decisions, declaration-closure changes, and bundle-path escape attempts. It also
+proves that schema-1 verification remains bundle-local after relocation and
+producer-origin disappearance.
+
+The verifier cannot detect a malicious producer that coherently rewrites every
+record, raw source, resolved declaration, and the canonical index. Such a bundle
+may be internally consistent and reach the highest C5 assurance level. The
+canonical `not_established` fields remain mandatory because the root is not a
+signature or attestation and no independent replay occurred. The exact A1–A7
+mapping is maintained in [the adversarial acceptance matrix](adversarial-acceptance.md).
+
 ## Source evidence format
 
 Git subprocess output is captured as bytes without locale-dependent decoding.

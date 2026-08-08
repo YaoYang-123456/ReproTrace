@@ -2,14 +2,16 @@
 
 更新时间：2026-08-08
 
-## 仓库快照
+## C5.0 acceptance snapshot
 
 - 仓库：`https://github.com/YaoYang-123456/ReproTrace`
-- 本地工作目录：`E:\codex-work\ReproTrace-local`
-- 分支：`main`
-- HEAD：`531d65653690ee1342fa5b87745dc5b605f90b43`
-- 本地 `main` 与 `origin/main`：当前一致
-- 本阶段开始时工作树：干净
+- acceptance 分支：`codex/c5.0-assurance-verifier`
+- C5.0 基线：`main@0fc67da9bac302ec1d5c2f660b325d7225ee3067`
+- Stage 6 preflight commit：`53f34b85784794d4c9ba4e7235b0a2d701acbc36`
+- snapshot 日期：2026-08-08
+- Stage 6 开始时工作树：干净
+
+以上是具名验收快照，不表示读取本文时仓库的动态 HEAD。
 
 ## 当前已实现
 
@@ -98,6 +100,50 @@ Stage 5 将 Stage 1–4 的现有语义呈现到 CLI 与 `report.md`，不新增
 `16 passed`；默认编码与 `python -X utf8=0` 完整测试均为 `162 passed, 4 skipped`。
 四个 skip 仍仅因当前 Windows 账户无普通 symlink 创建权限，Windows junction 两项测试实际
 执行并通过。未启动 PEFT-ViT、训练或 GPU。
+
+## C5.0 Stage 6 local acceptance
+
+C5.0 已完成 canonical assurance contract、bundle-safe evidence index、raw metric
+source capture、verifier-side metric re-extraction、manifest declaration closure 和
+CLI/report precise semantics。正式 adversarial matrix 位于
+[`docs/adversarial-acceptance.md`](adversarial-acceptance.md)，覆盖：
+
+- A1 forged successful command record 与 command-log closure；
+- A2 stdout/stderr 删除或未重建索引的修改；
+- A3 cached `metrics.json` 修改并重建 index；
+- A4 raw metric evidence 与 embedded/index hash 同步修改；
+- A5 bundle relocation、producer 消失与 origin metadata trap；
+- A6 resolved expected/atol/rtol 修改并重建 index；
+- A7 traversal、POSIX/Windows absolute、drive/UNC、symlink 与 junction escape。
+
+另外保留一项 expected-limitation fixture：恶意 producer 若同步重写 commands、logs、raw
+metrics、derived metrics、resolved manifest、metadata 和 index，使 bundle 完全自洽，C5.0
+可能达到 `metric_derivations_recomputed`。这不属于 C5.0 可检测范围；输出仍必须明确
+`execution_authenticity=not_established`、`independent_replay=not_performed`、
+`scientific_reproduction=not_established`。
+
+2026-08-08 本地 acceptance 结果：
+
+- assurance/adversarial suite：`37 passed`；
+- CLI/report：`16 passed`；metric evidence：`7 passed`；assurance contract：`16 passed`；
+- evidence index/path：`20 passed, 2 skipped`；C4/C4.1 source：`56 passed, 2 skipped`；
+- 默认编码完整套件：`166 passed, 4 skipped`；
+- `python -X utf8=0` 在 `encoding=cp1252` 下完整套件：`166 passed, 4 skipped`；
+- 四个 skip 均为本地 Windows 账户缺少普通 file/directory symlink 创建权限；两个真实
+  Windows junction escape 用例均执行并通过；
+- 真实 tiny CPU run 使用 run/verification schema 1，得到 `complete`、checks PASS、
+  `metric_derivations_recomputed`、`recorded_success`、`matched`，evidence root 为
+  `6506f1d8e42d4e8a1b0e974264ed61886348de34db0adb9e5ad3b63173f0c5ca`；
+- 独立 verify/report 退出 0；移动 bundle 并删除原位置后再次 verify/report，root、assurance
+  和 result 保持相同。
+
+本地 acceptance 未使用网络、GPU、付费基础设施，也未启动 PEFT-ViT。跨平台最终状态由
+该分支 push 后的 Ubuntu Python 3.10/3.12、Windows 3.12 和 macOS 3.12 GitHub Actions
+矩阵确认。
+
+C5.0 的已知边界包括恶意 producer 完整一致伪造、execution authenticity、independent
+replay、scientific reproduction，以及 external input/artifact 的 metadata-only coverage。
+Evidence root 是 snapshot identifier，不是签名、attestation 或可信来源证明。
 
 ## C4 source evidence
 
@@ -223,8 +269,13 @@ C4.1 本地验证结果：
 Windows 本地已验证 Git 接受 `/dev/null` 作为空 order file；Linux 与 macOS
 由新增的同一生产路径回归测试在 GitHub Actions matrix 中继续确认。
 
-## 下一步
+## 后续研究候选
 
-下一步仅在人工批准后进入 Stage 6：adversarial suite、文档、跨平台 CI 与最终验收。
+后续仅记录为待人工研究决策的候选方向，不自动形成实施任务：
+
+- C5.1/C6 independent replay；
+- stronger provenance / trusted execution boundary；
+- verification 与 reproduction claim 的系统化 evaluation。
+
 PEFT-ViT 正式 GPU 阻塞项仍为 seed、CIFAR-100 预置与哈希、DINO revision 和
 precision；所有阻塞项关闭并单独确认 GPU 实验方案前，不启动训练。

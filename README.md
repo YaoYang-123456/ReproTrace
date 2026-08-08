@@ -123,7 +123,10 @@ bundle-safe path rules and canonical index format are defined in
 emit a dependency-closure index and can reach bundle-integrity assurance after
 all indexed bytes and authoritative references are checked.
 The raw metric source schema and its Stage 3 assurance boundary are documented
-in [the metric source specification](docs/metric-sources-v1.md).
+in [the metric source specification](docs/metric-sources-v1.md). The formal
+[C5 adversarial acceptance matrix](docs/adversarial-acceptance.md) maps the
+supported tamper, relocation, and path-escape cases to repeatable tests and
+states the coherent-producer-forgery boundary.
 
 `metric_derivations_recomputed` means recorded metric derivations were
 re-extracted from indexed evidence and agreed exactly. It does **not** mean the

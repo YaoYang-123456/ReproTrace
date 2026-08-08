@@ -77,3 +77,11 @@ external to evade index membership. The verifier emits `evidence_root_sha256`
 only when the complete integrity contract passes. The root remains a snapshot
 identifier, never an authenticity proof. Legacy run schema 0 is not migrated or
 upgraded.
+
+Deleting or modifying an indexed file without rebuilding the index is detected.
+Rebuilding an index around changed bytes can preserve internal integrity, but
+independent derivation and declaration checks may still detect inconsistencies.
+If a malicious producer coherently rewrites all evidence and the index, the new
+root identifies that replacement snapshot; it does not prove authenticity. See
+[the C5 adversarial acceptance matrix](adversarial-acceptance.md) for the A1–A7
+regressions and expected limitation.
