@@ -73,6 +73,8 @@ choose between conflicting environments, infer private dataset access, or turn
 an approximate protocol into a strict paper reproduction.
 
 See [the v0 design note](docs/design-v0.md) for the current scope and decisions.
+The canonical C5 verification vocabulary and its explicit limitations are
+defined in [the assurance contract](docs/assurance-contract-v1.md).
 
 ## Development
 

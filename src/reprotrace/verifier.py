@@ -8,8 +8,42 @@ import stat
 from pathlib import Path, PurePosixPath, PureWindowsPath
 from typing import Any
 
+import yaml
+
+from .assurance import (
+    DEPRECATED_VERIFICATION_FIELDS,
+    NOT_ESTABLISHED,
+    AssuranceLevel,
+    ResultStatus,
+    VerificationStatus,
+    coverage_skeleton,
+    recorded_execution_status,
+)
 from .errors import ConfigError
 from .io import comparison_key, fingerprint, read_json, read_source_record, sha256_file, utc_now, write_json
+from .manifest import validate_manifest
+
+
+def _require_record_object(value: Any, name: str) -> dict[str, Any]:
+    if not isinstance(value, dict):
+        raise ConfigError(f"invalid {name}; root must be an object")
+    return value
+
+
+def _require_record_list(value: Any, name: str) -> list[dict[str, Any]]:
+    if not isinstance(value, list) or not all(isinstance(item, dict) for item in value):
+        raise ConfigError(f"invalid {name}; root must be an array of objects")
+    return value
+
+
+def _read_resolved_manifest(path: Path) -> dict[str, Any]:
+    try:
+        manifest = yaml.safe_load(path.read_text(encoding="utf-8"))
+    except (OSError, yaml.YAMLError) as exc:
+        raise ConfigError(f"cannot read resolved manifest evidence {path}: {exc}") from exc
+    manifest = _require_record_object(manifest, "manifest.resolved.yaml")
+    validate_manifest(manifest)
+    return manifest
 
 
 def _check_fingerprint(record: dict[str, Any], check_id: str, category: str) -> dict[str, Any]:
@@ -98,12 +132,16 @@ def verify_bundle(run_dir: str | Path, *, write: bool = True) -> dict[str, Any]:
     if missing:
         raise ConfigError(f"invalid evidence bundle {directory}; missing: {', '.join(missing)}")
 
-    run = read_json(directory / "run.json")
+    run = _require_record_object(read_json(directory / "run.json"), "run.json")
+    if run.get("schema_version", 0) != 0:
+        raise ConfigError(f"unsupported run.json schema_version: {run.get('schema_version')!r}")
     source = read_source_record(directory / "source.json")
-    inputs = read_json(directory / "inputs.json")
-    commands = read_json(directory / "commands.json")
-    artifacts = read_json(directory / "artifacts.json")
-    metrics = read_json(directory / "metrics.json")
+    _require_record_object(read_json(directory / "environment.json"), "environment.json")
+    inputs = _require_record_list(read_json(directory / "inputs.json"), "inputs.json")
+    commands = _require_record_list(read_json(directory / "commands.json"), "commands.json")
+    artifacts = _require_record_list(read_json(directory / "artifacts.json"), "artifacts.json")
+    metrics = _require_record_list(read_json(directory / "metrics.json"), "metrics.json")
+    _read_resolved_manifest(directory / "manifest.resolved.yaml")
     checks: list[dict[str, Any]] = []
 
     source_schema = source.get("schema_version", 0)
@@ -140,7 +178,6 @@ def verify_bundle(run_dir: str | Path, *, write: bool = True) -> dict[str, Any]:
 
     if run.get("dry_run"):
         preflight_passed = all(check["passed"] for check in checks)
-        checks.append({"id": "execution", "category": "run", "passed": False, "reason": "dry run; no experiment was executed"})
         status = "planned" if preflight_passed else "preflight_failed"
     else:
         if run.get("evidence_error"):
@@ -204,12 +241,28 @@ def verify_bundle(run_dir: str | Path, *, write: bool = True) -> dict[str, Any]:
             )
         status = "passed" if checks and all(check["passed"] for check in checks) else "failed"
 
+    compatibility_passed = status == "passed"
+    checks_passed = preflight_passed if run.get("dry_run") else all(check["passed"] for check in checks)
     result = {
-        "schema_version": 0,
+        "schema_version": 1,
         "run_id": run.get("run_id"),
         "verified_at": utc_now(),
+        "verification_status": str(
+            VerificationStatus.COMPLETE if checks_passed else VerificationStatus.INCOMPLETE
+        ),
+        "assurance_level": str(AssuranceLevel.RECORDED),
+        "execution_record_status": str(recorded_execution_status(run, commands)),
+        "result_status": str(ResultStatus.NOT_EVALUATED),
+        "checks_passed": checks_passed,
+        "coverage": coverage_skeleton(source=source, inputs=inputs, artifacts=artifacts, metrics=metrics),
+        "not_established": dict(NOT_ESTABLISHED),
+        "compatibility": {
+            "deprecated_fields": list(DEPRECATED_VERIFICATION_FIELDS),
+            "legacy_status": status,
+            "legacy_passed": compatibility_passed,
+        },
         "status": status,
-        "passed": status == "passed",
+        "passed": compatibility_passed,
         "preflight_passed": preflight_passed if run.get("dry_run") else None,
         "checks": checks,
     }
