@@ -176,6 +176,35 @@ command protocol check、index roles、独立 verify/report 均通过，最终�
 Stage 6.1 明确没有改变 verifier-time hash/open/parse TOCTOU，也没有提供 immutable
 same-object snapshot。该问题只保留为需要单独授权的 Stage 6.2 研究/实施范围。
 
+## C5.0 Stage 6.2a verified snapshot model
+
+Stage 6.2a 在独立分支 `codex/c5.0-snapshot-identity` 上新增 verifier-private
+snapshot/session 内部模型，基线为
+`f54cc49ce95caaf663d649ef4f78f729d7f36cba`。设计细节见
+[`docs/verified-snapshot-model.md`](verified-snapshot-model.md)。
+
+- `VerifiedEvidenceObject` 支持 immutable memory bytes、verifier-owned
+  `SpooledTemporaryFile` 和 integrity-only 三种 retention；只有成功 acquisition、
+  fingerprint validation 与 seal 后才能取得 semantic reader；
+- `VerifiedBundleSnapshot` 保存 exact canonical index bytes、parsed index、candidate root、
+  canonical path object map、parsed-record cache 与 root-identity placeholder；缺失、失败、
+  未验证或未封存对象均阻止 established root；
+- `VerificationSession` 显式拥有 snapshot 与 spool 生命周期，支持 context manager、幂等
+  cleanup 和非权威 cleanup diagnostics；cleanup 错误不回溯改变 evidence correctness；
+- candidate root 仍是 canonical `evidence.index.json` bytes 的 SHA-256，但只有完整 acquisition
+  且 snapshot seal 后才可作为 established root 暴露；evidence-root 公式和 assurance taxonomy
+  均未改变。
+
+Stage 6.2a 专项测试 `16 passed`，Stage 6.1 assurance/manifest 回归 `70 passed`；默认编码与
+`python -X utf8=0`（`encoding=cp1252`）完整套件均为 `212 passed, 4 skipped`。四个 skip
+仍仅为本机普通 symlink 权限，Windows junction tests 实际执行；`git diff --check` 与
+`compileall` 均通过。
+
+本阶段没有接入现有 verifier、metrics、report 或 CLI，也没有读取 live bundle path。
+因此 verifier-time TOCTOU/H1 尚未关闭；handle-bound acquisition、index-wide snapshot、
+snapshot-backed extraction、session/report integration 和 derived-output root identity check
+仍分别属于 Stage 6.2b–6.2f，未经人工批准不实施。
+
 ## C4 source evidence
 
 C3 验证期间确认：Windows 默认 cp1252 Python 环境在解码包含中文 UTF-8
