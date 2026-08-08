@@ -385,6 +385,20 @@ outputs 均未进入 index；未使用 GPU、PEFT-ViT、训练或网络。
 `STAGE 6.2f LOCAL PASS`；H1 final closure、C5.0 acceptance 与 merge authorization 仍等待本阶段
 commit 的 Ubuntu 3.10/3.12、Windows 3.12、macOS 3.12 GitHub Actions 和人工 gate。
 
+第一次 Stage 6.2f acceptance commit
+`d7a4cd4edafa0d2702e1d2707af10f53d0da9315` 的本地 gate 通过，但 GitHub Actions run
+`31268142340` 在 adversarial tests 执行前失败：Ubuntu 3.12 与 macOS 3.12 在 collection 阶段无法
+解析隐式 namespace import `tests.test_assurance_verifier`，Windows 3.12 与 Ubuntu 3.10 被
+fail-fast 取消。这是 test import portability 缺陷，不是 production verifier 失败证据。
+
+修复严格限于新增空文件 `tests/__init__.py`，使既有 cross-test helper imports 成为显式 package
+imports；`tests/test_c5_final_adversarial_acceptance.py` 的 Git blob 与第一次提交完全相同，没有改变
+test body、fixture mutation、assertion、skip condition 或 adversarial sequence。Setuptools discovery
+仍只以 `src` 为根，从仓库外的 editable install 无法发现 `tests`。修复后直接 `pytest` 与
+`python -m pytest` 的 final suite 均为 `52 passed, 1 skipped`，无 `PYTHONPATH` 的独立 import
+通过；两种入口的完整套件及 cp1252 完整套件均为 `390 passed, 10 skipped`。H1 final closure
+仍等待新 repair commit 的四平台 CI 与人工 gate。
+
 ## C4 source evidence
 
 C3 验证期间确认：Windows 默认 cp1252 Python 环境在解码包含中文 UTF-8

@@ -3,10 +3,12 @@
 ## Gate status
 
 - Authoritative production base: `d189e470f522ea4b4fd14a95777f3a98be3e3ef1`.
-- Acceptance test commit: the commit containing this document; its exact SHA is
-  recorded in the push/CI handoff because a Git commit cannot embed its own hash.
-- Local gate: **PASS** on Windows 3.13.9, including a cp1252 run.
-- Cross-platform gate: **pending** GitHub Actions and human review.
+- Acceptance test commit: `d7a4cd4edafa0d2702e1d2707af10f53d0da9315`.
+- First attempt: local **PASS**, CI **FAIL** before test execution because the
+  acceptance module depended on an implicit `tests` namespace-package import.
+- Portability-repair rerun: local **PASS** on Windows 3.13.9, including direct
+  `pytest`, `python -m pytest`, and cp1252 full-suite runs.
+- Cross-platform rerun gate: **pending** new GitHub Actions and human review.
 - H1 final closure: pending the cross-platform gate.
 - Merge authorization: withheld. This stage did not merge or create a pull request.
 - Production source freeze: no file under `src/reprotrace/` changed.
@@ -213,7 +215,8 @@ name or alias.
 | Stage 6.1 assurance/protocol | 93 passed |
 | CLI/reporting | 16 passed |
 | runner/end-to-end | 11 passed |
-| full default suite | 390 passed, 10 skipped |
+| full direct `pytest` suite | 390 passed, 10 skipped |
+| full `python -m pytest` suite | 390 passed, 10 skipped |
 | full `python -X utf8=0` (`cp1252`) | 390 passed, 10 skipped |
 | `git diff --check` | passed |
 | `compileall src/reprotrace tests` | passed |
@@ -250,9 +253,28 @@ GitHub Actions. A skipped mutation will not be described as tested.
 ## CI and final recommendation
 
 The authoritative Stage 6.2e base CI is green on Ubuntu 3.10, Ubuntu 3.12,
-Windows 3.12, and macOS 3.12. Stage 6.2f CI is pending creation of the
-acceptance-only commit and push.
+Windows 3.12, and macOS 3.12. The first Stage 6.2f acceptance commit
+`d7a4cd4edafa0d2702e1d2707af10f53d0da9315` passed locally but failed in
+[GitHub Actions run 31268142340](https://github.com/YaoYang-123456/ReproTrace/actions/runs/31268142340).
+Ubuntu 3.12 reported `ModuleNotFoundError: No module named 'tests'` while
+collecting the final acceptance module; macOS 3.12 also failed during pytest
+collection, and fail-fast cancelled Windows 3.12 and Ubuntu 3.10. No adversarial
+case executed in that failed cross-platform gate.
+
+The test-portability repair adds only an empty `tests/__init__.py`, making the
+existing cross-test helper imports explicit. The final adversarial test file is
+byte-identical to the failed-attempt commit: no test body, fixture mutation,
+assertion, skip condition, or adversarial sequence changed. Setuptools package
+discovery remains rooted at `src`; from outside the repository the editable
+installation exposes `reprotrace` but no `tests` package.
+
+Before repair, direct `pytest` reproduced the collection error locally while
+`python -m pytest` and a repository-root Python import happened to resolve the
+implicit namespace. After repair, both final-suite entry forms returned
+`52 passed, 1 skipped`, a clean subprocess import succeeded without `PYTHONPATH`,
+and all three complete suites returned `390 passed, 10 skipped`. A new
+cross-platform Actions run is still pending the repair commit and push.
 
 Local recommendation: retain `H1 final closure pending cross-platform gate` and
-withhold merge authorization until the Stage 6.2f GitHub Actions matrix is green
-and a human confirms this test-only commit.
+withhold merge authorization until the repaired Stage 6.2f GitHub Actions matrix
+is green and a human confirms the test-only repair commit.
