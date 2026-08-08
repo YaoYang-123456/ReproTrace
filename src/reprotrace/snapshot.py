@@ -84,11 +84,63 @@ class EvidenceFingerprint:
 
 
 @dataclass(frozen=True, slots=True)
-class BundleRootIdentity:
-    """Placeholder for the handle-bound root identity defined in Stage 6.2b."""
+class FileIdentity:
+    """Structured stat identity used only to defend one acquisition."""
 
     mechanism: str
-    attributes: tuple[tuple[str, str], ...]
+    device: int | None
+    file_id: int | None
+    file_type: str
+    unavailable_reason: str | None = None
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.mechanism, str) or not self.mechanism:
+            raise ValueError("file identity mechanism must be a non-empty string")
+        if self.file_type not in {"regular", "directory", "other"}:
+            raise ValueError(f"unsupported file identity type: {self.file_type!r}")
+        if self.unavailable_reason is None:
+            if (
+                isinstance(self.device, bool)
+                or not isinstance(self.device, int)
+                or self.device < 0
+            ):
+                raise ValueError("file identity device must be a non-negative integer")
+            if (
+                isinstance(self.file_id, bool)
+                or not isinstance(self.file_id, int)
+                or self.file_id <= 0
+            ):
+                raise ValueError("file identity id must be a positive integer")
+        else:
+            if not isinstance(self.unavailable_reason, str) or not self.unavailable_reason:
+                raise ValueError("identity unavailability requires a diagnostic reason")
+            if self.device is not None or self.file_id is not None:
+                raise ValueError("unavailable file identity cannot contain identity values")
+
+    @property
+    def available(self) -> bool:
+        return self.unavailable_reason is None
+
+    @classmethod
+    def unavailable(cls, *, file_type: str, reason: str) -> FileIdentity:
+        return cls(
+            mechanism="unavailable",
+            device=None,
+            file_id=None,
+            file_type=file_type,
+            unavailable_reason=reason,
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class BundleRootIdentity:
+    """Structured identity of the resolved bundle-root directory."""
+
+    file_identity: FileIdentity
+
+    def __post_init__(self) -> None:
+        if self.file_identity.file_type != "directory":
+            raise ValueError("bundle root identity must describe a directory")
 
 
 @dataclass(frozen=True, slots=True)
@@ -229,7 +281,7 @@ class VerifiedEvidenceObject:
         self._state = EvidenceObjectState.NEW
         self._closed = False
         self._failure_reason: str | None = None
-        self._acquisition_identity: str | None = None
+        self._acquisition_identity: FileIdentity | None = None
         self._hasher: Any | None = None
         self._acquired_size = 0
         self._memory_buffer: bytearray | None = None
@@ -272,7 +324,7 @@ class VerifiedEvidenceObject:
         return self._closed
 
     @property
-    def acquisition_identity(self) -> str | None:
+    def acquisition_identity(self) -> FileIdentity | None:
         return self._acquisition_identity
 
     @property
@@ -282,6 +334,10 @@ class VerifiedEvidenceObject:
     @property
     def spool_rolled_to_disk(self) -> bool:
         return self._spool_rolled_to_disk
+
+    @property
+    def snapshot_owned(self) -> bool:
+        return self._snapshot_claimed
 
     @property
     def semantic_size(self) -> int:
@@ -303,14 +359,17 @@ class VerifiedEvidenceObject:
                 f"verified evidence object is closed: {self._relative_path}"
             )
 
-    def begin_acquisition(self, *, identity: str | None = None) -> None:
+    def begin_acquisition(self, *, identity: FileIdentity | None = None) -> None:
         self._require_open()
         if self._state is not EvidenceObjectState.NEW:
             raise SnapshotStateError(
                 f"evidence acquisition cannot begin from state {self._state.value}"
             )
-        if identity is not None and (not isinstance(identity, str) or not identity):
-            raise ValueError("acquisition identity must be a non-empty string or null")
+        if identity is not None:
+            if not isinstance(identity, FileIdentity):
+                raise TypeError("acquisition identity must be a FileIdentity or null")
+            if not identity.available:
+                raise ValueError("unavailable file identity cannot begin acquisition")
         self._acquisition_identity = identity
         self._hasher = hashlib.sha256()
         self._acquired_size = 0
@@ -383,7 +442,7 @@ class VerifiedEvidenceObject:
         self,
         value: bytes,
         *,
-        identity: str | None = None,
+        identity: FileIdentity | None = None,
     ) -> EvidenceFingerprint:
         self.begin_acquisition(identity=identity)
         self.append_acquired_bytes(value)
@@ -391,13 +450,14 @@ class VerifiedEvidenceObject:
 
     def mark_failed(self, reason: str) -> None:
         self._require_open()
-        if self._state in {EvidenceObjectState.ACQUIRED, EvidenceObjectState.SEALED}:
-            raise SnapshotStateError("validated evidence cannot be marked failed")
+        if self._state is EvidenceObjectState.SEALED:
+            raise SnapshotStateError("sealed evidence cannot be marked failed")
         if not isinstance(reason, str) or not reason:
             raise ValueError("failure reason must be a non-empty string")
         self._failure_reason = reason
         self._hasher = None
         self._memory_buffer = None
+        self._memory_payload = None
         self._state = EvidenceObjectState.FAILED
 
     def seal(self) -> None:
@@ -527,6 +587,10 @@ class VerifiedBundleSnapshot:
     @property
     def session_closed(self) -> bool:
         return self._session_closed
+
+    @property
+    def session_claimed(self) -> bool:
+        return self._session_claimed
 
     @property
     def objects(self) -> Mapping[str, VerifiedEvidenceObject]:

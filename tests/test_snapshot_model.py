@@ -69,7 +69,7 @@ def make_object(
 
 
 def acquire_and_seal(evidence: VerifiedEvidenceObject, value: bytes) -> None:
-    evidence.acquire_bytes(value, identity="unit-test acquisition")
+    evidence.acquire_bytes(value)
     evidence.seal()
 
 
@@ -125,7 +125,7 @@ def test_spool_retention_has_independent_fresh_readers() -> None:
         ["metric_source"],
         StorageKind.SPOOL,
     )
-    evidence.begin_acquisition(identity="unit-test stream")
+    evidence.begin_acquisition()
     evidence.append_acquired_bytes(value[:5])
     evidence.append_acquired_bytes(value[5:])
     evidence.finish_acquisition()
@@ -170,7 +170,7 @@ def test_sealed_object_rejects_payload_and_state_mutation() -> None:
         evidence.begin_acquisition()
     with pytest.raises(SnapshotStateError, match="only be appended"):
         evidence.append_acquired_bytes(b"different")
-    with pytest.raises(SnapshotStateError, match="cannot be marked failed"):
+    with pytest.raises(SnapshotStateError, match="sealed evidence cannot be marked failed"):
         evidence.mark_failed("replacement attempt")
     with pytest.raises(SnapshotStateError, match="only be sealed"):
         evidence.seal()

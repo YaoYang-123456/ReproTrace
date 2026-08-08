@@ -201,9 +201,37 @@ Stage 6.2a 专项测试 `16 passed`，Stage 6.1 assurance/manifest 回归 `70 pa
 `compileall` 均通过。
 
 本阶段没有接入现有 verifier、metrics、report 或 CLI，也没有读取 live bundle path。
-因此 verifier-time TOCTOU/H1 尚未关闭；handle-bound acquisition、index-wide snapshot、
-snapshot-backed extraction、session/report integration 和 derived-output root identity check
-仍分别属于 Stage 6.2b–6.2f，未经人工批准不实施。
+因此 Stage 6.2a 完成时 verifier-time TOCTOU/H1 尚未关闭；后续能力继续按 Stage 6.2b–6.2f
+独立授权和验收。
+
+## C5.0 Stage 6.2b handle-bound single-file acquisition
+
+Stage 6.2b 在同一 `codex/c5.0-snapshot-identity` 分支增加单个 evidence object 的
+handle-bound acquisition primitive，但仍未接入生产 verifier：
+
+- `FileIdentity` 使用 immutable structured `st_dev`、`st_ino`/file index 和 file type；
+  bool/无效 id 被拒绝，identity 不可用时显式 fail closed，不退化为 pathname assurance；
+- object 必须先加入已由 `VerificationSession` claim 的 snapshot，再开始 live acquisition；
+  成功和失败的 memory/spool retention 都由 session 统一清理；
+- acquisition 依次执行 root identity、candidate precheck、单次 read-only/non-inheritable
+  `os.open`、descriptor `fstat`、root/path postcheck，然后才使用 bounded `os.read` chunks；
+- 同一 descriptor stream 同时驱动 observed size/SHA-256 以及 memory、spool 或
+  integrity-only retention；不执行 path hash、semantic reopen、自动 retry 或 spool fallback；
+- final regular/symlink swap、parent symlink/junction redirect、root replacement、read error、
+  spool error 和 fingerprint mismatch 均在对象上 fail closed，且 identity uncertainty 在读取
+  semantic bytes 前失败。
+
+Stage 6.2b 本地 Windows 专项为 `15 passed, 4 skipped`，Stage 6.2a 模型回归 `16 passed`，
+Stage 6.1 assurance/manifest 回归 `70 passed`。新增 skip 为两个普通 symlink 权限用例、
+POSIX-only parent symlink，以及 Windows `os.open` 共享模式无法实际执行的 post-open rename；
+后者由完成真实 post-path inspection 后注入 structured identity mismatch 的 Windows fixture
+覆盖。Windows parent junction replacement 实际执行并通过。
+
+默认编码与 `python -X utf8=0`（`encoding=cp1252`）完整套件均为
+`227 passed, 8 skipped`；`git diff --check` 与 `compileall` 通过。Stage 6.2b 仍没有改变
+`verify_bundle`、`validate_evidence_index`、metric extraction、report、CLI、schema、assurance
+taxonomy 或 evidence-root 公式，因此生产 verifier 的 H1/TOCTOU 仍保持 open，等待单独批准
+Stage 6.2c 及后续集成。
 
 ## C4 source evidence
 
