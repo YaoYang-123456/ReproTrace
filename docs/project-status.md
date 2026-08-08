@@ -354,6 +354,37 @@ H1 production implementation 在 Stage 6.2e 达到 candidate-closed；最终 clo
 仍等待 Stage 6.2f adversarial cross-platform acceptance。跨平台最终结论须等待本提交的 GitHub
 Actions Ubuntu 3.10/3.12、Windows 3.12 与 macOS 3.12 人工 gate。
 
+## C5.0 Stage 6.2f final adversarial acceptance
+
+Stage 6.2f 在 authoritative production base
+`d189e470f522ea4b4fd14a95777f3a98be3e3ef1` 上冻结 `src/reprotrace/`，只新增最终对抗测试与
+验收文档。Windows 本地 gate 已覆盖 post-snapshot A→B metric/core/index/source mutation、
+verify→report 同 session、一轮操作内禁止 live evidence reopen、run/index/indexed-file single
+acquisition、live evidence tree loss、real bundle-root replacement safe-write、root identity unavailable、
+large spool/fresh readers/cleanup，以及重新索引后仍须失败的 H2 command protocol 与 H3 wildcard
+artifact membership 攻击。H1/H2/H3 本地结果均为 PASS，且没有修改生产源码。
+
+本地分层结果：Stage 6.2f `52 passed, 1 skipped`；Stage 6.2e `37 passed`；Stage 6.2d
+`37 passed, 1 skipped`；Stage 6.2c `28 passed`；Stage 6.2b `17 passed, 4 skipped`；Stage 6.2a
+`16 passed`；Stage 6.1 `93 passed`；CLI/report `16 passed`；runner/end-to-end `11 passed`。
+仓库外 basetemp 下默认完整套件与 `python -X utf8=0`（`encoding=cp1252`）完整套件均为
+`390 passed, 10 skipped`；`compileall src/reprotrace tests` 和 `git diff --check` 通过。Windows
+真实 junction、structured post-open identity 与两个阶段的真实 root replacement 均已执行；普通
+symlink 权限和 opened-file rename sharing 限制均有明确 skip 与等价覆盖，POSIX 实例等待 CI。
+
+真实 tiny executed bundle `.reprotrace/runs/20260808T163948Z-dd02ff` 在 runner finalization、
+standalone verify、report 与 report regeneration 中始终为 `complete / metric_derivations_recomputed /
+recorded_success / matched`，index SHA-256 与 evidence root 均为
+`69246ca34cf0009e66553c242cfb92a54a818c2f0aa2395541b93f8abfde0460`。真实 dry-run bundle
+`.reprotrace/runs/20260808T164019Z-fde2b9` 保持 `complete / bundle_integrity_checked / not_run /
+not_evaluated`，index/root 均为
+`68026940a2ce90a98ea5117555aa294d3b452f68af8260132b7695fe326cf318`。两个 bundle 的 derived
+outputs 均未进入 index；未使用 GPU、PEFT-ViT、训练或网络。
+
+完整结果与原始独立审计 fixture 映射见 `docs/c5-stage-6.2f-final-acceptance.md`。当前只能声明
+`STAGE 6.2f LOCAL PASS`；H1 final closure、C5.0 acceptance 与 merge authorization 仍等待本阶段
+commit 的 Ubuntu 3.10/3.12、Windows 3.12、macOS 3.12 GitHub Actions 和人工 gate。
+
 ## C4 source evidence
 
 C3 验证期间确认：Windows 默认 cp1252 Python 环境在解码包含中文 UTF-8
