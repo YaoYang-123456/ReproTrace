@@ -30,6 +30,12 @@ Git worktree, `source.patch` preserves the exact binary-capable diff bytes and
 `source.status` preserves the NUL-delimited porcelain status; `source.json`
 records their formats, sizes, SHA-256 hashes, and replay coverage.
 
+Normal runs also write `metric_sources.json`. Metric sources already inside the
+bundle, such as command logs and run artifacts, are referenced directly;
+external files actually consumed by an extractor are snapshotted under
+`raw/metrics/`. Derived metrics are then extracted from those bundle-local bytes,
+while origin paths remain historical metadata only.
+
 Run the remaining commands with that directory:
 
 ```bash
@@ -78,6 +84,8 @@ defined in [the assurance contract](docs/assurance-contract-v1.md). The
 bundle-safe path rules and canonical index format are defined in
 [the evidence index specification](docs/evidence-index-v1.md); current runner
 bundles do not emit that index or claim bundle-integrity assurance yet.
+The raw metric source schema and its Stage 3 assurance boundary are documented
+in [the metric source specification](docs/metric-sources-v1.md).
 
 ## Development
 

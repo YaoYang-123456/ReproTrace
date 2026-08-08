@@ -28,7 +28,11 @@ from .manifest import (
     runtime_context,
     substitute,
 )
-from .metrics import extract_metrics
+from .metrics import (
+    capture_metric_sources,
+    empty_metric_sources_record,
+    extract_metrics_from_evidence,
+)
 from .reporting import generate_report
 from .verifier import verify_bundle
 
@@ -189,6 +193,8 @@ def run_manifest(
     write_yaml(run_dir / "manifest.resolved.yaml", redacted_manifest(manifest.data))
     write_json(run_dir / "environment.json", capture_environment())
     write_json(run_dir / "inputs.json", inputs)
+    metric_sources = empty_metric_sources_record()
+    write_json(run_dir / "metric_sources.json", metric_sources)
 
     if dry_run:
         commands = _planned_commands(manifest, context, run_dir)
@@ -207,7 +213,13 @@ def run_manifest(
     metrics: list[dict[str, Any]] = []
     if commands and all(item["status"] == "completed" for item in commands):
         try:
-            metrics = extract_metrics(manifest, context)
+            metric_sources = capture_metric_sources(manifest, context, run_dir)
+            write_json_atomic(run_dir / "metric_sources.json", metric_sources)
+            metrics = extract_metrics_from_evidence(
+                manifest.data.get("metrics", []),
+                run_dir,
+                metric_sources,
+            )
         except ConfigError as exc:
             run_record["evidence_error"] = str(exc)
     write_json(run_dir / "metrics.json", metrics)

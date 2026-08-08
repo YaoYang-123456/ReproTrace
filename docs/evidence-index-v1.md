@@ -65,5 +65,6 @@ does not raise assurance to `bundle_integrity_checked`. That upgrade requires a
 future production verification path to prove that its complete required evidence
 closure and every verifier dependency are indexed and verified.
 
-Raw metric source snapshots and metric re-extraction are Stage 3 concerns and
-are intentionally absent here.
+Stage 3 raw metric source snapshots are defined separately and are not
+automatically enrolled in a production evidence index. Metric re-extraction and
+the complete assurance pipeline remain Stage 4 concerns.

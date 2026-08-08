@@ -105,10 +105,10 @@ Stage 1 emits machine-readable coverage without claiming evidence closure:
 
 `metric_sources.total` is the authoritative declared metric count from
 `manifest.resolved.yaml`; `recorded` is the number of derived records currently
-present in `metrics.json`; and `captured` remains zero until raw metric source
-snapshots are introduced. These counts do not upgrade assurance. Later stages
-will derive bundle-local coverage from the canonical evidence index and raw
-metric snapshots.
+present in `metrics.json`. Stage 3 captures raw metric source evidence for new
+normal runs, but the Stage 1 verification skeleton continues to report
+`captured: 0` until Stage 4 actually validates those records and their bundle
+closure. These counts do not upgrade assurance.
 
 ## Deprecated compatibility fields
 

@@ -86,7 +86,12 @@ def test_tiny_run_creates_passing_bundle(tmp_path: Path) -> None:
     run_dir, verification = run_manifest(manifest)
 
     assert verification["passed"] is True
-    assert read_json(run_dir / "metrics.json")[0]["actual"] == 3.0
+    metric = read_json(run_dir / "metrics.json")[0]
+    metric_sources = read_json(run_dir / "metric_sources.json")
+    assert metric["actual"] == 3.0
+    assert metric["source_evidence_paths"] == ["artifacts/metrics.csv"]
+    assert metric_sources["metrics"][0]["sources"][0]["evidence_path"] == "artifacts/metrics.csv"
+    assert not (run_dir / "raw" / "metrics").exists()
     assert (run_dir / "commands.jsonl").is_file()
     assert (run_dir / "report.md").is_file()
     assert "Decision:** `passed`" in (run_dir / "report.md").read_text(encoding="utf-8")
@@ -129,6 +134,7 @@ def test_dry_run_never_executes_command(tmp_path: Path) -> None:
     assert verification["status"] == "planned"
     assert verification["preflight_passed"] is True
     assert read_json(run_dir / "commands.json")[0]["status"] == "planned"
+    assert read_json(run_dir / "metric_sources.json") == {"schema_version": 1, "metrics": []}
 
 
 def test_dry_run_records_expanded_step_environment(tmp_path: Path) -> None:
@@ -281,8 +287,15 @@ def test_log_regex_metric_uses_captured_stdout(tmp_path: Path) -> None:
 
     run_dir, verification = run_manifest(path)
 
+    metric_sources = read_json(run_dir / "metric_sources.json")
+    source = metric_sources["metrics"][0]["sources"][0]
     assert verification["passed"] is True
     assert read_json(run_dir / "metrics.json")[0]["actual"] == 91.25
+    assert source["evidence_path"] == "logs/evaluate.stdout.log"
+    assert read_json(run_dir / "metrics.json")[0]["source_evidence_paths"] == [
+        "logs/evaluate.stdout.log"
+    ]
+    assert not (run_dir / "raw" / "metrics").exists()
 
 
 def test_dry_run_detects_wrong_source_ref(tmp_path: Path) -> None:

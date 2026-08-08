@@ -5,7 +5,7 @@
 ReproTrace records a claim-to-evidence chain for a local research experiment:
 
 ```text
-source -> environment -> inputs -> commands -> logs -> artifacts -> metrics -> decision
+source -> environment -> inputs -> commands -> logs/artifacts -> raw metric sources -> metrics -> decision
 ```
 
 The core remains project-neutral. PEFT-ViT, VPT, SSF, and FreqFit informed the
@@ -79,6 +79,7 @@ Supported now:
 - sequential argv-based subprocess steps;
 - declared file inputs and artifacts;
 - CSV and log-regex metrics;
+- ordered bundle-local raw metric source capture;
 - one seed per evidence bundle;
 - source, environment, command, log, hash, metric, and report capture;
 - locale-independent raw Git status and binary-capable patch evidence.
@@ -98,4 +99,6 @@ Deferred:
 Commands are argv arrays and run without `shell=True`. Environment variables
 whose names contain token, key, secret, or password are excluded from recorded
 evidence. ReproTrace does not copy large artifacts by default; it records their
-resolved paths, sizes, and SHA-256 hashes.
+resolved paths, sizes, and SHA-256 hashes. The only new Stage 3 copies are the
+specific text files actually matched and consumed by metric extractors; existing
+bundle logs and artifacts are referenced without duplication.
