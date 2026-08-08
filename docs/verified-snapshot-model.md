@@ -169,14 +169,56 @@ location. Integrity-only payload bytes are intentionally unavailable to semantic
 consumers. Root or file identity instability causes one fail-closed attempt;
 there is no retry, restart, fallback, or switch to a replacement root.
 
+## Snapshot-backed metric extraction
+
+Stage 6.2d adds the internal `extract_metrics_from_snapshot()` path. It accepts
+an already-open `VerificationSession`; it does not create or close a hidden
+session. The snapshot must be active, complete, sealed, and have an established
+root. The resolved manifest and `metric_sources.json` are obtained only from the
+Stage 6.2c parsed-record cache, never from bundle paths or producer metadata.
+
+The captured resolved manifest is validated with the existing manifest rules.
+Its metric IDs must have exact missing/extra closure with the ordered metric
+records in cached `metric_sources.json`; output order follows the manifest.
+Within each metric, source order remains the explicit ordinal order recorded by
+`metric_sources.json`, independent of index path sorting.
+
+Each `evidence_path` is bound to an existing, open, sealed snapshot object with
+the `metric_source` role and semantic retention. The size and SHA-256 declared
+by `metric_sources.json` must equal the object's index-bound expected
+fingerprint, and its handle-acquired observed fingerprint must still equal that
+expected value. No live stat or hash is performed for this cross-record closure.
+
+CSV and log-regex extraction share one reader-based parsing layer with the
+legacy Path adapter. Snapshot readers are opened afresh and closed
+deterministically for each source and metric, so multiple metrics may consume
+the same retained spool without sharing reader position. CSV remains strict
+UTF-8 with existing column, empty-field, numeric, finite-value, and selector
+semantics. Regex remains UTF-8 with `errors="replace"`, existing match/group
+order, and the same finite numeric conversion. Derived record fields and
+`last`/`min`/`max` selectors are unchanged.
+
+`origin_path` is compatibility/provenance display metadata only. Snapshot
+extraction never opens, resolves, stats, hashes, or requires it, and it never
+falls back to a live `evidence_path`. Consequently metric derivation continues
+to work after live metric files or the original producer location are deleted,
+replaced, redirected, made unreadable, or relocated, provided the owning
+session remains open.
+
+The legacy path-backed metric APIs remain available and production runner and
+verifier behavior is unchanged. Stage 6.2d provides a separately testable
+snapshot consumer for later integration; it does not itself close production
+verifier TOCTOU/H1.
+
 ## Assurance boundary
 
 The eventual invariant is that canonical verification semantics and report
 content consume retained snapshot representations, never reopened live bundle
-paths. Stage 6.2c establishes this invariant only inside its separately testable
-builder; the production verifier does not consume the builder yet. Stages
-6.2a-c add no assurance level, schema field, evidence-root change, CLI behavior,
-or report behavior.
+paths. Stage 6.2c establishes this invariant inside its separately testable
+builder, and Stage 6.2d preserves it for the independent metric derivation path;
+the production verifier does not consume either path yet. Stages 6.2a-d add no
+assurance level, schema field, evidence-root change, CLI behavior, or report
+behavior.
 
 The model claims one coherent logical byte snapshot described by one captured
 index. It does not claim a filesystem-atomic whole-directory snapshot or that
@@ -184,7 +226,7 @@ all pathnames physically coexisted at one instant. Producer authenticity,
 trusted execution, signing, attestation, independent replay, and scientific
 reproduction remain not established.
 
-Deferred to separately approved substages are snapshot-backed metric extraction,
-production verifier/report session integration, and bundle-root identity checks
-before writing derived outputs. Consequently, the production verifier's known
-TOCTOU issue and H1 remain open after Stage 6.2c.
+Deferred to separately approved substages are production verifier/report session
+integration and bundle-root identity checks before writing derived outputs.
+Consequently, the production verifier's known TOCTOU issue and H1 remain open
+after Stage 6.2d.

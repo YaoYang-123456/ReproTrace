@@ -270,6 +270,43 @@ Windows 当前用户缺少普通 file/directory symlink 权限、一个 POSIX-on
 verification root 相同。`compileall` 与 `git diff --check` 均通过；未使用 GPU、训练、网络或
 PEFT-ViT。
 
+## C5.0 Stage 6.2d snapshot-backed metric extraction
+
+Stage 6.2d 新增独立、尚未接入 production verifier 的 snapshot metric derivation path：
+
+- API 只接受 active `VerificationSession`，要求 snapshot complete、sealed 且 established root
+  可用；不创建或关闭隐藏 session；
+- resolved metric specifications 与 metric source declarations 分别只来自 parsed cache 中的
+  `manifest.resolved.yaml` 和 `metric_sources.json`；metric ID 执行 missing/extra closure，输出
+  使用 manifest order，source 使用显式 ordinal order；
+- 每个 `evidence_path` 必须绑定已存在、open、sealed、带 `metric_source` role 且有 semantic
+  retention 的 snapshot object；semantic size/SHA-256 必须等于 index-bound expected
+  fingerprint，observed fingerprint 也必须已与 expected 相同；
+- CSV 与 regex 共用 reader-based parsing core；legacy Path adapter 保留。CSV 使用 strict
+  UTF-8，regex 保持 UTF-8 `errors=replace`；`last`/`min`/`max`、finite numeric validation 和
+  derived metric record schema 均未改变；
+- 每个 metric/source 都取得 fresh retained reader 并确定性关闭；共享 spool 不共享 reader
+  position。`origin_path` 仅作为 provenance/display metadata，绝不被打开、解析、stat、hash
+  或作为 fallback。
+
+测试证明 snapshot 构建后删除、替换或重定向 live metric path，以及删除 origin 或移动 bundle，
+均不改变 derivation；测试同时阻断 `Path.open/read_text/read_bytes`、`resolve_bundle_file`、
+`sha256_file` 与 `os.stat`，snapshot extraction 仍成功。本阶段没有修改 production
+`verify_bundle`、report/session lifecycle、derived-output safe-write、schema、assurance、root
+公式或 CLI，因此 production H1/TOCTOU 继续保持 open，等待 Stage 6.2e 的独立批准与验收。
+
+2026-08-08 本地 Windows 验证结果：Stage 6.2d 专项 `37 passed, 1 skipped`，唯一 skip 为
+当前用户无普通 file symlink 权限；legacy metric path suite `7 passed`；Stage 6.2c builder
+`28 passed`；Stage 6.2b acquisition `17 passed, 4 skipped`；Stage 6.2a model `16 passed`；
+Stage 6.1 assurance/protocol `93 passed`。默认编码与 `python -X utf8=0`
+（`encoding=cp1252`）完整套件均为 `301 passed, 9 skipped`。
+
+独立真实 tiny CPU smoke 中，snapshot-backed derivation 得到 `mean_score.actual=3.0`、
+`sample_count=1`、`select=last`、`passed=true`，与当前 production verifier 的 recomputed
+结果完全一致；snapshot established root 与 production verification root 同为
+`fece31236c95ea6fe02959677669bb533bef44b1922c9515a2c7caa361a81b21`。未使用 GPU、
+PEFT-ViT、训练或测试网络依赖。
+
 ## C4 source evidence
 
 C3 验证期间确认：Windows 默认 cp1252 Python 环境在解码包含中文 UTF-8

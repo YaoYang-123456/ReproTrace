@@ -4,16 +4,26 @@ from __future__ import annotations
 
 import csv
 import glob
+import io
 import math
 import re
+from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
-from typing import Any, Mapping, Sequence
+from typing import Any, BinaryIO, Callable, Iterator, Mapping, Sequence
 
 from .errors import ConfigError
 from .evidence import normalize_bundle_path, resolve_bundle_file
 from .io import sha256_bytes, sha256_file, write_bytes_atomic
-from .manifest import SAFE_ID, LoadedManifest, substitute
+from .manifest import SAFE_ID, LoadedManifest, substitute, validate_manifest
+from .snapshot import (
+    EvidenceFingerprint,
+    EvidenceObjectState,
+    SessionState,
+    SnapshotStateError,
+    StorageKind,
+    VerificationSession,
+)
 
 
 METRIC_SOURCES_SCHEMA_VERSION = 1
@@ -26,6 +36,14 @@ class ResolvedMetricSources:
     metric_id: str
     declared_path: str
     paths: tuple[Path, ...]
+
+
+@dataclass(frozen=True)
+class _MetricReaderSource:
+    """One ordered metric source exposed through a fresh binary reader."""
+
+    label: str
+    open_reader: Callable[[], BinaryIO]
 
 
 def empty_metric_sources_record() -> dict[str, Any]:
@@ -90,30 +108,64 @@ def _finite_metric_value(value: Any, *, context: str) -> float:
     return number
 
 
-def _csv_values(paths: Sequence[Path], column: str) -> list[float]:
+@contextmanager
+def _open_text_metric_source(
+    source: _MetricReaderSource,
+    *,
+    errors: str,
+    newline: str | None,
+    failure_prefix: str,
+) -> Iterator[io.TextIOWrapper]:
+    try:
+        with source.open_reader() as binary:
+            with io.TextIOWrapper(
+                binary,
+                encoding="utf-8",
+                errors=errors,
+                newline=newline,
+            ) as text:
+                yield text
+    except ConfigError:
+        raise
+    except (OSError, UnicodeError) as exc:
+        raise ConfigError(f"{failure_prefix} {source.label}: {exc}") from exc
+
+
+def _csv_values(sources: Sequence[_MetricReaderSource], column: str) -> list[float]:
     values: list[float] = []
-    for path in paths:
+    for source in sources:
         try:
-            with path.open("r", encoding="utf-8", newline="") as handle:
+            with _open_text_metric_source(
+                source,
+                errors="strict",
+                newline="",
+                failure_prefix="cannot extract CSV metric from",
+            ) as handle:
                 reader = csv.DictReader(handle)
                 if reader.fieldnames is None or column not in reader.fieldnames:
-                    raise ConfigError(f"CSV metric column {column!r} not found in {path}")
+                    raise ConfigError(
+                        f"CSV metric column {column!r} not found in {source.label}"
+                    )
                 for row in reader:
                     raw = row.get(column)
                     if raw not in (None, ""):
                         values.append(
                             _finite_metric_value(
                                 raw,
-                                context=f"CSV metric column {column!r} in {path}",
+                                context=(
+                                    f"CSV metric column {column!r} in {source.label}"
+                                ),
                             )
                         )
-        except OSError as exc:
-            raise ConfigError(f"cannot extract CSV metric from {path}: {exc}") from exc
+        except csv.Error as exc:
+            raise ConfigError(
+                f"cannot parse CSV metric from {source.label}: {exc}"
+            ) from exc
     return values
 
 
 def _regex_values(
-    paths: Sequence[Path],
+    sources: Sequence[_MetricReaderSource],
     pattern: str,
     group: int | str,
 ) -> list[float]:
@@ -122,23 +174,57 @@ def _regex_values(
     except re.error as exc:
         raise ConfigError(f"invalid metric regular expression: {exc}") from exc
     values: list[float] = []
-    for path in paths:
-        try:
-            text = path.read_text(encoding="utf-8", errors="replace")
-        except OSError as exc:
-            raise ConfigError(f"cannot read metric log {path}: {exc}") from exc
+    for source in sources:
+        with _open_text_metric_source(
+            source,
+            errors="replace",
+            newline=None,
+            failure_prefix="cannot read metric log",
+        ) as handle:
+            text = handle.read()
         for match in compiled.finditer(text):
             try:
                 raw = match.group(group)
-            except (IndexError, KeyError) as exc:
-                raise ConfigError(f"cannot parse regex group {group!r} as a number in {path}") from exc
+            except (IndexError, KeyError, TypeError) as exc:
+                raise ConfigError(
+                    f"cannot parse regex group {group!r} as a number in "
+                    f"{source.label}"
+                ) from exc
             values.append(
                 _finite_metric_value(
                     raw,
-                    context=f"regex group {group!r} in {path}",
+                    context=f"regex group {group!r} in {source.label}",
                 )
             )
     return values
+
+
+def _extract_metric_from_readers(
+    specification: Mapping[str, Any],
+    sources: Sequence[_MetricReaderSource],
+) -> dict[str, Any]:
+    if not sources:
+        raise ConfigError(
+            f"metric {specification.get('id')!r} has no bundle-local evidence sources"
+        )
+    if specification["extractor"] == "csv":
+        values = _csv_values(sources, specification["column"])
+    elif specification["extractor"] == "log_regex":
+        values = _regex_values(
+            sources,
+            specification["pattern"],
+            specification.get("group", 1),
+        )
+    else:
+        raise ConfigError(
+            f"unsupported metric extractor: {specification.get('extractor')}"
+        )
+    selector = specification.get("select", "last")
+    return {
+        "actual": _select(values, selector),
+        "sample_count": len(values),
+        "select": selector,
+    }
 
 
 def extract_metric_from_evidence(
@@ -147,24 +233,14 @@ def extract_metric_from_evidence(
 ) -> dict[str, Any]:
     """Pure extraction from explicitly ordered evidence paths, never origin metadata."""
 
-    if not source_paths:
-        raise ConfigError(f"metric {specification.get('id')!r} has no bundle-local evidence sources")
-    if specification["extractor"] == "csv":
-        values = _csv_values(source_paths, specification["column"])
-    elif specification["extractor"] == "log_regex":
-        values = _regex_values(
-            source_paths,
-            specification["pattern"],
-            specification.get("group", 1),
+    sources = [
+        _MetricReaderSource(
+            label=str(path),
+            open_reader=lambda path=path: path.open("rb"),
         )
-    else:
-        raise ConfigError(f"unsupported metric extractor: {specification.get('extractor')}")
-    selector = specification.get("select", "last")
-    return {
-        "actual": _select(values, selector),
-        "sample_count": len(values),
-        "select": selector,
-    }
+        for path in source_paths
+    ]
+    return _extract_metric_from_readers(specification, sources)
 
 
 def _bundle_root(path: str | Path) -> Path:
@@ -406,6 +482,126 @@ def _derived_metric_record(
     return record
 
 
+def _metric_source_records_by_id(
+    specifications: Sequence[Mapping[str, Any]],
+    source_record: Mapping[str, Any],
+) -> dict[str, Mapping[str, Any]]:
+    by_id = {metric["id"]: metric for metric in source_record["metrics"]}
+    declared_ids = [specification["id"] for specification in specifications]
+    declared_id_set = set(declared_ids)
+    missing = [metric_id for metric_id in declared_ids if metric_id not in by_id]
+    extra = [metric_id for metric_id in by_id if metric_id not in declared_id_set]
+    if missing or extra:
+        details = []
+        if missing:
+            details.append(f"missing: {', '.join(missing)}")
+        if extra:
+            details.append(f"unexpected: {', '.join(extra)}")
+        raise ConfigError(
+            "metric source declarations do not match resolved manifest; "
+            + "; ".join(details)
+        )
+    return by_id
+
+
+def _snapshot_metric_reader_sources(
+    session: VerificationSession,
+    metric_record: Mapping[str, Any],
+) -> list[_MetricReaderSource]:
+    snapshot = session.snapshot
+    objects = snapshot.objects
+    readers: list[_MetricReaderSource] = []
+    for source in metric_record["sources"]:
+        evidence_path = source["evidence_path"]
+        evidence = objects.get(evidence_path)
+        if evidence is None:
+            raise ConfigError(
+                f"metric source evidence is absent from verified snapshot: {evidence_path}"
+            )
+        if "metric_source" not in evidence.roles:
+            raise ConfigError(
+                f"verified snapshot evidence lacks metric_source role: {evidence_path}"
+            )
+        if evidence.state is not EvidenceObjectState.SEALED or evidence.closed:
+            raise SnapshotStateError(
+                f"metric source evidence is not sealed and readable: {evidence_path}"
+            )
+        if evidence.storage_kind is StorageKind.INTEGRITY_ONLY:
+            raise ConfigError(
+                f"metric source evidence has no retained semantic representation: "
+                f"{evidence_path}"
+            )
+        declared_fingerprint = EvidenceFingerprint(
+            source["size_bytes"],
+            source["sha256"],
+        )
+        if evidence.expected_fingerprint != declared_fingerprint:
+            raise ConfigError(
+                "metric_sources.json fingerprint does not match the evidence index for "
+                f"{evidence_path}"
+            )
+        if (
+            not evidence.acquired_and_validated
+            or evidence.observed_fingerprint != evidence.expected_fingerprint
+        ):
+            raise SnapshotStateError(
+                f"metric source evidence integrity is not established: {evidence_path}"
+            )
+        readers.append(
+            _MetricReaderSource(
+                label=evidence_path,
+                open_reader=evidence.open_reader,
+            )
+        )
+    return readers
+
+
+def extract_metrics_from_snapshot(
+    session: VerificationSession,
+) -> list[dict[str, Any]]:
+    """Derive metrics solely from one open, sealed verified snapshot."""
+
+    if not isinstance(session, VerificationSession):
+        raise TypeError("snapshot metric extraction requires a VerificationSession")
+    snapshot = session.snapshot
+    if session.state is not SessionState.OPEN or not snapshot.session_active:
+        raise SnapshotStateError(
+            "snapshot metric extraction requires an active verification session"
+        )
+    if not snapshot.sealed:
+        raise SnapshotStateError(
+            "snapshot metric extraction requires a fully sealed snapshot"
+        )
+    snapshot.require_established_evidence_root()
+
+    resolved_manifest = snapshot.parsed_record("manifest.resolved.yaml")
+    validate_manifest(resolved_manifest)
+    specifications = resolved_manifest.get("metrics", [])
+    metric_sources = validate_metric_sources_record(
+        snapshot.parsed_record("metric_sources.json")
+    )
+    by_id = _metric_source_records_by_id(specifications, metric_sources)
+
+    records: list[dict[str, Any]] = []
+    for specification in specifications:
+        metric_record = by_id[specification["id"]]
+        reader_sources = _snapshot_metric_reader_sources(session, metric_record)
+        extraction = _extract_metric_from_readers(specification, reader_sources)
+        records.append(
+            _derived_metric_record(
+                specification,
+                extraction,
+                origin_paths=[
+                    source["origin_path"] for source in metric_record["sources"]
+                ],
+                evidence_paths=[
+                    source["evidence_path"] for source in metric_record["sources"]
+                ],
+            )
+        )
+    return records
+
+
 def extract_metrics_from_evidence(
     specifications: Sequence[Mapping[str, Any]],
     bundle_root: str | Path,
@@ -415,17 +611,7 @@ def extract_metrics_from_evidence(
 
     root = _bundle_root(bundle_root)
     source_record = validate_metric_sources_record(metric_sources)
-    by_id = {metric["id"]: metric for metric in source_record["metrics"]}
-    declared_ids = [specification["id"] for specification in specifications]
-    missing = [metric_id for metric_id in declared_ids if metric_id not in by_id]
-    extra = [metric_id for metric_id in by_id if metric_id not in set(declared_ids)]
-    if missing or extra:
-        details = []
-        if missing:
-            details.append(f"missing: {', '.join(missing)}")
-        if extra:
-            details.append(f"unexpected: {', '.join(extra)}")
-        raise ConfigError(f"metric source declarations do not match resolved manifest; {'; '.join(details)}")
+    by_id = _metric_source_records_by_id(specifications, source_record)
 
     records: list[dict[str, Any]] = []
     for specification in specifications:
