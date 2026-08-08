@@ -20,6 +20,10 @@ EVIDENCE_INDEX_EXCLUDED_PATHS = frozenset(
 )
 
 
+def _reject_non_finite_json(token: str) -> None:
+    raise ValueError(f"non-finite JSON number is not allowed: {token}")
+
+
 def normalize_bundle_path(value: Any, *, label: str = "evidence") -> str:
     """Return a canonical POSIX-style bundle-relative path."""
 
@@ -182,6 +186,7 @@ def canonical_evidence_index_bytes(index: Any) -> bytes:
         ensure_ascii=False,
         sort_keys=True,
         separators=(",", ":"),
+        allow_nan=False,
     ).encode("utf-8")
 
 
@@ -255,8 +260,11 @@ def read_evidence_index(bundle_root: str | Path) -> dict[str, Any]:
     )
     try:
         encoded = path.read_bytes()
-        parsed = json.loads(encoded.decode("utf-8"))
-    except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
+        parsed = json.loads(
+            encoded.decode("utf-8"),
+            parse_constant=_reject_non_finite_json,
+        )
+    except (OSError, UnicodeDecodeError, ValueError) as exc:
         raise ConfigError(f"cannot read evidence index {path}: {exc}") from exc
     normalized = _normalized_evidence_index(parsed)
     if encoded != canonical_evidence_index_bytes(normalized):

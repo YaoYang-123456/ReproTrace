@@ -78,6 +78,13 @@ only when the complete integrity contract passes. The root remains a snapshot
 identifier, never an authenticity proof. Legacy run schema 0 is not migrated or
 upgraded.
 
+`commands.json` carries `command_record` and is the verifier's semantic command
+input. `commands.jsonl` carries `command_archive`; it remains in the exact
+indexed closure so deletion or byte modification is detected, but its contents
+are not a second command authority. Command stdout/stderr paths are independently
+bound to their manifest step protocol, so rebuilding the index cannot rebind a
+log role to an arbitrary file and retain canonical command closure.
+
 Deleting or modifying an indexed file without rebuilding the index is detected.
 Rebuilding an index around changed bytes can preserve internal integrity, but
 independent derivation and declaration checks may still detect inconsistencies.
@@ -85,3 +92,7 @@ If a malicious producer coherently rewrites all evidence and the index, the new
 root identifies that replacement snapshot; it does not prove authenticity. See
 [the C5 adversarial acceptance matrix](adversarial-acceptance.md) for the A1–A7
 regressions and expected limitation.
+
+Index validation is not a filesystem transaction. Stage 6.1 does not bind the
+hash and later parser reads to an immutable same-object snapshot; verifier-time
+TOCTOU remains outside this specification.

@@ -52,6 +52,13 @@ external files actually consumed by an extractor are snapshotted under
 `raw/metrics/`. Derived metrics are then extracted from those bundle-local bytes,
 while origin paths remain historical metadata only.
 
+For schema-1 bundles, `commands.json` is the sole semantic command record and is
+bound field-by-field to the producer-finalized protocol in
+`manifest.resolved.yaml`. `commands.jsonl` is an indexed convenience/archive
+export; the verifier protects its bytes but does not treat it as a second command
+authority. Command log identities are fixed as `logs/<step>.stdout.log` and
+`logs/<step>.stderr.log`.
+
 Run the remaining commands with that directory:
 
 ```bash
@@ -132,6 +139,13 @@ states the coherent-producer-forgery boundary.
 re-extracted from indexed evidence and agreed exactly. It does **not** mean the
 experiment was independently replayed or the paper was scientifically
 reproduced.
+
+Manifest expected values and tolerances, command timeouts, and extracted metric
+values use a finite numeric domain: booleans, NaN, and infinity are rejected;
+tolerances are non-negative and present timeouts are positive. C5 verification
+still does not provide an immutable verifier-time filesystem snapshot. A file
+can change between separate verifier operations; that TOCTOU boundary is not
+solved by the evidence index.
 
 ## Development
 

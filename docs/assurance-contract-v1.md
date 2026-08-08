@@ -91,6 +91,25 @@ No value establishes that a real process ran. Every verification record carries:
 }
 ```
 
+For schema-1, `commands.json` is the sole semantic command authority. Its
+immutable fields are checked against the ordered, producer-finalized protocol in
+`manifest.resolved.yaml`, including requested/resolved argv, cwd, environment
+overrides, timeout, and fixed stdout/stderr evidence paths. Successful execution
+requires the full manifest sequence; a failed execution may retain only the
+valid prefix ending in one failed/timeout/launch-error record. Status,
+return-code, and `run.status` combinations follow the state machine in the v0
+design. `false` is never accepted as exit code zero.
+
+`commands.jsonl` is an indexed archive/convenience export. Its bytes receive
+ordinary index integrity protection, but it is not parsed or compared as a
+second semantic command record and carries the `command_archive` role rather
+than `command_record`.
+
+Schema-1 bundles created before this protocol metadata existed remain readable,
+but missing authority is a failed canonical closure check and cannot retain
+bundle-integrity assurance. They are not silently upgraded from the older
+command contract.
+
 ## Coverage
 
 Legacy schema-0 verification retains the conservative Stage-1 coverage shape.
@@ -162,6 +181,10 @@ contract.
 
 Therefore C5 assurance never establishes execution authenticity, independent
 replay, or scientific reproduction.
+
+Stage 6.1 also does not establish an immutable verifier-time snapshot. Hashing,
+opening, and parsing are not bound to one filesystem object across the complete
+verification operation; that TOCTOU problem is reserved for separate work.
 
 The executable A1–A7 threat cases and the coherent-forgery boundary fixture are
 mapped in [the C5 adversarial acceptance matrix](adversarial-acceptance.md).

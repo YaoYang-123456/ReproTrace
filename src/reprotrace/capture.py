@@ -16,6 +16,7 @@ from .errors import ConfigError
 from .evidence import normalize_bundle_path, resolve_bundle_file
 from .io import fingerprint, sha256_bytes
 from .manifest import LoadedManifest, substitute
+from .protocol import bundle_artifact_path_matches, bundle_artifact_pattern
 
 
 @dataclass(frozen=True)
@@ -414,14 +415,35 @@ def capture_artifacts(
         for pattern in step.get("artifacts", []):
             resolved_pattern = _resolve_path(pattern, manifest.project_root, context)
             matches = sorted(Path(match) for match in glob.glob(str(resolved_pattern), recursive=True))
+            scoped_matches = [
+                _scope_fingerprint(fingerprint(path), bundle_root) for path in matches
+            ]
+            canonical_pattern = bundle_artifact_pattern(pattern)
+            if canonical_pattern is not None:
+                seen_evidence_paths: set[str] = set()
+                for match in scoped_matches:
+                    if match.get("path_scope") != "bundle":
+                        continue
+                    evidence_path = match.get("evidence_path")
+                    if not bundle_artifact_path_matches(
+                        canonical_pattern, evidence_path
+                    ):
+                        raise ConfigError(
+                            f"captured artifact {evidence_path!r} does not match "
+                            f"bundle declaration {pattern!r}"
+                        )
+                    if evidence_path in seen_evidence_paths:
+                        raise ConfigError(
+                            f"duplicate bundle artifact evidence path for {pattern!r}: "
+                            f"{evidence_path}"
+                        )
+                    seen_evidence_paths.add(evidence_path)
             declarations.append(
                 {
                     "step_id": step["id"],
                     "declared_path": pattern,
                     "resolved_pattern": str(resolved_pattern),
-                    "matches": [
-                        _scope_fingerprint(fingerprint(path), bundle_root) for path in matches
-                    ],
+                    "matches": scoped_matches,
                 }
             )
     return declarations

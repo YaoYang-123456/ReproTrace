@@ -85,7 +85,11 @@ def recorded_execution_status(run: dict[str, Any], commands: Sequence[dict[str, 
     if not commands:
         return ExecutionRecordStatus.UNKNOWN
     successful = all(
-        command.get("status") == "completed" and command.get("return_code") == 0 for command in commands
+        command.get("status") == "completed"
+        and not isinstance(command.get("return_code"), bool)
+        and isinstance(command.get("return_code"), int)
+        and command.get("return_code") == 0
+        for command in commands
     )
     return ExecutionRecordStatus.RECORDED_SUCCESS if successful else ExecutionRecordStatus.RECORDED_FAILURE
 

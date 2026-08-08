@@ -78,6 +78,18 @@ def _select(values: list[float], selector: str) -> float:
     raise ConfigError(f"unsupported metric selector: {selector}")
 
 
+def _finite_metric_value(value: Any, *, context: str) -> float:
+    if isinstance(value, bool):
+        raise ConfigError(f"invalid {context}; metric value must be a finite number")
+    try:
+        number = float(value)
+    except (TypeError, ValueError, OverflowError) as exc:
+        raise ConfigError(f"invalid {context}; metric value must be numeric") from exc
+    if not math.isfinite(number):
+        raise ConfigError(f"invalid {context}; metric value must be finite")
+    return number
+
+
 def _csv_values(paths: Sequence[Path], column: str) -> list[float]:
     values: list[float] = []
     for path in paths:
@@ -89,8 +101,13 @@ def _csv_values(paths: Sequence[Path], column: str) -> list[float]:
                 for row in reader:
                     raw = row.get(column)
                     if raw not in (None, ""):
-                        values.append(float(raw))
-        except (OSError, ValueError) as exc:
+                        values.append(
+                            _finite_metric_value(
+                                raw,
+                                context=f"CSV metric column {column!r} in {path}",
+                            )
+                        )
+        except OSError as exc:
             raise ConfigError(f"cannot extract CSV metric from {path}: {exc}") from exc
     return values
 
@@ -112,9 +129,15 @@ def _regex_values(
             raise ConfigError(f"cannot read metric log {path}: {exc}") from exc
         for match in compiled.finditer(text):
             try:
-                values.append(float(match.group(group)))
-            except (IndexError, KeyError, ValueError) as exc:
+                raw = match.group(group)
+            except (IndexError, KeyError) as exc:
                 raise ConfigError(f"cannot parse regex group {group!r} as a number in {path}") from exc
+            values.append(
+                _finite_metric_value(
+                    raw,
+                    context=f"regex group {group!r} in {path}",
+                )
+            )
     return values
 
 
@@ -359,10 +382,12 @@ def _derived_metric_record(
     origin_paths: Sequence[str],
     evidence_paths: Sequence[str] | None,
 ) -> dict[str, Any]:
-    actual = float(extraction["actual"])
-    expected = float(specification["expected"])
-    atol = float(specification.get("atol", 0.0))
-    rtol = float(specification.get("rtol", 0.0))
+    actual = _finite_metric_value(extraction["actual"], context="extracted metric actual")
+    expected = _finite_metric_value(specification["expected"], context="metric expected")
+    atol = _finite_metric_value(specification.get("atol", 0.0), context="metric atol")
+    rtol = _finite_metric_value(specification.get("rtol", 0.0), context="metric rtol")
+    if atol < 0 or rtol < 0:
+        raise ConfigError("metric tolerances must be non-negative")
     record = {
         "id": specification["id"],
         "extractor": specification["extractor"],

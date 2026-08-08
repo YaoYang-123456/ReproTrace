@@ -23,7 +23,13 @@ def utc_now() -> str:
 
 def write_json(path: Path, value: Any) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(value, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    try:
+        encoded = json.dumps(value, indent=2, sort_keys=True, allow_nan=False) + "\n"
+    except (TypeError, ValueError) as exc:
+        from .errors import ConfigError
+
+        raise ConfigError(f"cannot serialize strict JSON evidence {path}: {exc}") from exc
+    path.write_text(encoded, encoding="utf-8")
 
 
 def write_bytes_atomic(path: Path, value: bytes) -> None:
@@ -47,25 +53,38 @@ def write_bytes_atomic(path: Path, value: bytes) -> None:
 
 
 def write_json_atomic(path: Path, value: Any) -> None:
-    encoded = (json.dumps(value, indent=2, sort_keys=True) + "\n").encode("utf-8")
+    try:
+        encoded = (
+            json.dumps(value, indent=2, sort_keys=True, allow_nan=False) + "\n"
+        ).encode("utf-8")
+    except (TypeError, ValueError) as exc:
+        from .errors import ConfigError
+
+        raise ConfigError(f"cannot serialize strict JSON evidence {path}: {exc}") from exc
     write_bytes_atomic(path, encoded)
 
 
-def read_json(path: Path) -> Any:
+def read_json(path: Path, *, strict: bool = False) -> Any:
+    def reject_non_finite(token: str) -> None:
+        raise ValueError(f"non-finite JSON number is not allowed: {token}")
+
     try:
-        return json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError) as exc:
+        return json.loads(
+            path.read_text(encoding="utf-8"),
+            **({"parse_constant": reject_non_finite} if strict else {}),
+        )
+    except (OSError, ValueError) as exc:
         from .errors import ConfigError
 
         raise ConfigError(f"cannot read JSON evidence {path}: {exc}") from exc
 
 
-def read_source_record(path: Path) -> dict[str, Any]:
+def read_source_record(path: Path, *, strict_json: bool = False) -> dict[str, Any]:
     """Read and minimally validate a legacy or schema-1 source record."""
 
     from .errors import ConfigError
 
-    source = read_json(path)
+    source = read_json(path, strict=strict_json)
     if not isinstance(source, dict):
         raise ConfigError(f"invalid source.json {path}; root must be an object")
 

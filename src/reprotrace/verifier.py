@@ -31,8 +31,17 @@ from .evidence import (
 )
 from .errors import ConfigError
 from .io import read_json, read_source_record, sha256_file, utc_now, write_json_atomic
-from .manifest import validate_manifest
+from .manifest import redacted_environment, substitute, validate_manifest
 from .metrics import extract_metric_from_evidence, validate_metric_sources_record
+from .protocol import (
+    COMMAND_STATUSES,
+    PROTOCOL_METADATA_KEY,
+    bundle_artifact_path_matches,
+    bundle_artifact_pattern,
+    command_log_evidence_path,
+    join_protocol_path,
+    require_protocol_metadata,
+)
 
 
 def _require_record_object(value: Any, name: str) -> dict[str, Any]:
@@ -45,6 +54,15 @@ def _require_record_list(value: Any, name: str) -> list[dict[str, Any]]:
     if not isinstance(value, list) or not all(isinstance(item, dict) for item in value):
         raise ConfigError(f"invalid {name}; root must be an array of objects")
     return value
+
+
+def _is_finite_number(value: Any) -> bool:
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return False
+    try:
+        return math.isfinite(float(value))
+    except (OverflowError, ValueError):
+        return False
 
 
 def _read_resolved_manifest(path: Path) -> dict[str, Any]:
@@ -164,6 +182,8 @@ def _recorded_outcome_checks(commands: Sequence[Mapping[str, Any]]) -> list[dict
             "canonical": False,
             "required": True,
             "passed": command.get("status") == "completed"
+            and not isinstance(command.get("return_code"), bool)
+            and isinstance(command.get("return_code"), int)
             and command.get("return_code") == 0,
             "status": command.get("status"),
             "return_code": command.get("return_code"),
@@ -338,6 +358,11 @@ def _validate_scoped_fingerprint(record: Any, context: str) -> dict[str, Any]:
             int(digest, 16)
         except ValueError as exc:
             raise ConfigError(f"invalid {context}; sha256 must be SHA-256 hex") from exc
+        normalized = normalize_bundle_path(evidence_path, label=f"{context} evidence")
+        if normalized != evidence_path:
+            raise ConfigError(
+                f"invalid {context}; evidence_path must be canonical POSIX-style"
+            )
     elif evidence_path is not None:
         raise ConfigError(f"invalid {context}; external evidence_path must be null")
     return record
@@ -348,6 +373,7 @@ def _validate_schema_one_records(
     inputs: Sequence[dict[str, Any]],
     commands: Sequence[dict[str, Any]],
     artifacts: Sequence[dict[str, Any]],
+    metrics: Sequence[dict[str, Any]],
 ) -> None:
     if not isinstance(run.get("dry_run"), bool):
         raise ConfigError("invalid run.json; dry_run must be boolean")
@@ -359,12 +385,65 @@ def _validate_schema_one_records(
         if not isinstance(step_id, str) or not step_id or step_id in seen_steps:
             raise ConfigError(f"invalid commands.json item {index}; step_id must be unique")
         seen_steps.add(step_id)
+        status = command.get("status")
+        if status not in COMMAND_STATUSES:
+            raise ConfigError(
+                f"invalid commands.json item {index}; status must be one of "
+                f"{', '.join(sorted(COMMAND_STATUSES))}"
+            )
+        return_code = command.get("return_code")
+        if return_code is not None and (
+            isinstance(return_code, bool) or not isinstance(return_code, int)
+        ):
+            raise ConfigError(
+                f"invalid commands.json item {index}; return_code must be an integer or null"
+            )
+        for field in ("requested_argv", "argv"):
+            value = command.get(field)
+            if not isinstance(value, list) or not value or not all(
+                isinstance(item, str) for item in value
+            ):
+                raise ConfigError(
+                    f"invalid commands.json item {index}; {field} must be a non-empty array of strings"
+                )
+        if not isinstance(command.get("cwd"), str) or not command["cwd"]:
+            raise ConfigError(f"invalid commands.json item {index}; cwd is required")
+        overrides = command.get("environment_overrides")
+        if not isinstance(overrides, dict) or not all(
+            isinstance(key, str) and isinstance(value, str)
+            for key, value in overrides.items()
+        ):
+            raise ConfigError(
+                f"invalid commands.json item {index}; environment_overrides must map strings to strings"
+            )
+        timeout = command.get("timeout_seconds")
+        if timeout is not None and (
+            not _is_finite_number(timeout)
+            or timeout <= 0
+        ):
+            raise ConfigError(
+                f"invalid commands.json item {index}; timeout_seconds must be a finite positive number or null"
+            )
+        stream_paths: dict[str, str] = {}
         for stream in ("stdout", "stderr"):
             value = command.get(f"{stream}_evidence_path")
             if not isinstance(value, str) or not value:
                 raise ConfigError(
                     f"invalid commands.json item {index}; {stream}_evidence_path is required"
                 )
+            normalized = normalize_bundle_path(
+                value, label=f"command {index} {stream} evidence"
+            )
+            if normalized != value:
+                raise ConfigError(
+                    f"invalid commands.json item {index}; {stream}_evidence_path "
+                    "must be canonical POSIX-style"
+                )
+            stream_paths[stream] = normalized
+        if stream_paths["stdout"] == stream_paths["stderr"]:
+            raise ConfigError(
+                f"invalid commands.json item {index}; stdout and stderr evidence must be distinct"
+            )
     for declaration_index, declaration in enumerate(artifacts):
         matches = declaration.get("matches")
         if not isinstance(matches, list):
@@ -376,6 +455,320 @@ def _validate_schema_one_records(
                 match,
                 f"artifacts.json declaration {declaration_index} match {match_index}",
             )
+    for index, metric in enumerate(metrics):
+        for field in ("actual", "expected", "atol", "rtol", "absolute_error"):
+            value = metric.get(field)
+            if (
+                not _is_finite_number(value)
+            ):
+                raise ConfigError(
+                    f"invalid metrics.json item {index}; {field} must be a finite number"
+                )
+        if metric.get("atol", 0) < 0 or metric.get("rtol", 0) < 0:
+            raise ConfigError(
+                f"invalid metrics.json item {index}; tolerances must be non-negative"
+            )
+
+
+def _command_protocol_closure_check(
+    run: Mapping[str, Any],
+    resolved_manifest: Mapping[str, Any],
+    commands: Sequence[Mapping[str, Any]],
+) -> dict[str, Any]:
+    metadata_value = resolved_manifest.get(PROTOCOL_METADATA_KEY)
+    if metadata_value is None:
+        return {
+            "id": "command:protocol-closure",
+            "kind": "integrity",
+            "category": "command",
+            "canonical": True,
+            "required": True,
+            "passed": False,
+            "authority": "manifest.resolved.yaml:_reprotrace.commands",
+            "semantic_record": "commands.json",
+            "archive_record": "commands.jsonl",
+            "manifest_step_ids": [
+                step.get("id")
+                for step in resolved_manifest.get("run", {}).get("steps", [])
+            ],
+            "recorded_step_ids": [command.get("step_id") for command in commands],
+            "authority_errors": [
+                {"field": PROTOCOL_METADATA_KEY, "reason": "protocol metadata is missing"}
+            ],
+            "field_mismatches": [],
+            "state_violations": [],
+        }
+    metadata = require_protocol_metadata(metadata_value)
+    authority_commands = metadata["commands"]
+    runtime_context = metadata["runtime_context"]
+    manifest_steps = resolved_manifest.get("run", {}).get("steps", [])
+    expected_fields = {
+        "step_id",
+        "requested_argv",
+        "declared_cwd",
+        "declared_environment",
+        "argv",
+        "cwd",
+        "environment_overrides",
+        "timeout_seconds",
+        "stdout_evidence_path",
+        "stderr_evidence_path",
+    }
+
+    authority_errors: list[dict[str, Any]] = []
+    for field in ("python", "project_root", "run_dir"):
+        if not isinstance(runtime_context.get(field), str) or not runtime_context[field]:
+            raise ConfigError(
+                "invalid manifest.resolved.yaml; "
+                f"_reprotrace.runtime_context.{field} must be a non-empty string"
+            )
+    context_seed = runtime_context.get("seed")
+    if isinstance(context_seed, bool) or not isinstance(context_seed, int):
+        raise ConfigError(
+            "invalid manifest.resolved.yaml; _reprotrace.runtime_context.seed "
+            "must be an integer"
+        )
+    run_id = run.get("run_id")
+    run_seed = run.get("seed")
+    output_root = resolved_manifest.get("run", {}).get("output_root")
+    if not isinstance(run_id, str) or not run_id:
+        raise ConfigError("invalid run.json; run_id must be a non-empty string")
+    if isinstance(run_seed, bool) or not isinstance(run_seed, int):
+        raise ConfigError("invalid run.json; seed must be an integer")
+    if not isinstance(output_root, str) or not output_root:
+        raise ConfigError(
+            "invalid manifest.resolved.yaml; run.output_root must be a non-empty string"
+        )
+    expected_context = {
+        "project_root": resolved_manifest.get("project", {}).get("root"),
+        "run_dir": join_protocol_path(output_root, run_id),
+        "seed": run_seed,
+    }
+    for field, expected in expected_context.items():
+        if runtime_context.get(field) != expected:
+            authority_errors.append(
+                {
+                    "field": f"runtime_context.{field}",
+                    "expected": expected,
+                    "recorded": runtime_context.get(field),
+                }
+            )
+    if run.get("project_root") != runtime_context["project_root"]:
+        authority_errors.append(
+            {
+                "field": "run.project_root",
+                "expected": runtime_context["project_root"],
+                "recorded": run.get("project_root"),
+            }
+        )
+    for index, protocol in enumerate(authority_commands):
+        if set(protocol) != expected_fields:
+            raise ConfigError(
+                f"invalid manifest.resolved.yaml command protocol {index}; "
+                "unexpected or missing fields"
+            )
+        for field in ("requested_argv", "argv"):
+            value = protocol.get(field)
+            if not isinstance(value, list) or not value or not all(
+                isinstance(item, str) for item in value
+            ):
+                raise ConfigError(
+                    f"invalid manifest.resolved.yaml command protocol {index}; "
+                    f"{field} must be a non-empty array of strings"
+                )
+        for field in ("step_id", "declared_cwd", "cwd"):
+            if not isinstance(protocol.get(field), str) or not protocol[field]:
+                raise ConfigError(
+                    f"invalid manifest.resolved.yaml command protocol {index}; {field} is required"
+                )
+        for field in ("declared_environment", "environment_overrides"):
+            value = protocol.get(field)
+            if not isinstance(value, dict) or not all(
+                isinstance(key, str) and isinstance(item, str)
+                for key, item in value.items()
+            ):
+                raise ConfigError(
+                    f"invalid manifest.resolved.yaml command protocol {index}; "
+                    f"{field} must map strings to strings"
+                )
+        timeout = protocol.get("timeout_seconds")
+        if timeout is not None and (
+            not _is_finite_number(timeout)
+            or timeout <= 0
+        ):
+            raise ConfigError(
+                f"invalid manifest.resolved.yaml command protocol {index}; "
+                "timeout_seconds must be a finite positive number or null"
+            )
+        step = manifest_steps[index] if index < len(manifest_steps) else None
+        if not isinstance(step, Mapping):
+            authority_errors.append(
+                {"protocol_index": index, "field": "step", "reason": "missing manifest step"}
+            )
+            continue
+        direct_expectations = {
+            "step_id": step.get("id"),
+            "requested_argv": step.get("argv"),
+            "declared_cwd": step.get(
+                "cwd", resolved_manifest.get("project", {}).get("root")
+            ),
+            "declared_environment": step.get("env", {}),
+            "timeout_seconds": step.get("timeout_seconds"),
+            "stdout_evidence_path": command_log_evidence_path(step["id"], "stdout"),
+            "stderr_evidence_path": command_log_evidence_path(step["id"], "stderr"),
+        }
+        expected_argv = [
+            substitute(value, runtime_context) for value in step.get("argv", [])
+        ]
+        expected_overrides = {
+            key: substitute(value, runtime_context)
+            for key, value in step.get("env", {}).items()
+        }
+        expected_overrides.update(
+            {
+                "REPROTRACE_RUN_DIR": runtime_context["run_dir"],
+                "REPROTRACE_PROJECT_ROOT": runtime_context["project_root"],
+                "REPROTRACE_STEP_ID": step["id"],
+                "REPROTRACE_SEED": str(runtime_context["seed"]),
+            }
+        )
+        direct_expectations["argv"] = expected_argv
+        direct_expectations["environment_overrides"] = redacted_environment(
+            expected_overrides
+        )
+        for field, expected in direct_expectations.items():
+            if protocol.get(field) != expected:
+                authority_errors.append(
+                    {
+                        "protocol_index": index,
+                        "field": field,
+                        "expected": expected,
+                        "recorded": protocol.get(field),
+                    }
+                )
+        for stream in ("stdout", "stderr"):
+            value = protocol.get(f"{stream}_evidence_path")
+            normalized = normalize_bundle_path(
+                value, label=f"manifest command protocol {index} {stream} evidence"
+            )
+            if normalized != value:
+                raise ConfigError(
+                    f"invalid manifest.resolved.yaml command protocol {index}; "
+                    f"{stream}_evidence_path must be canonical POSIX-style"
+                )
+        if protocol["stdout_evidence_path"] == protocol["stderr_evidence_path"]:
+            raise ConfigError(
+                f"invalid manifest.resolved.yaml command protocol {index}; "
+                "stdout and stderr evidence must be distinct"
+            )
+
+    if len(authority_commands) != len(manifest_steps):
+        authority_errors.append(
+            {
+                "field": "command_count",
+                "expected": len(manifest_steps),
+                "recorded": len(authority_commands),
+            }
+        )
+
+    field_mismatches: list[dict[str, Any]] = []
+    for index, command in enumerate(commands):
+        if index >= len(authority_commands):
+            field_mismatches.append(
+                {"command_index": index, "field": "step", "reason": "not declared"}
+            )
+            continue
+        authority = authority_commands[index]
+        for field in (
+            "step_id",
+            "requested_argv",
+            "argv",
+            "cwd",
+            "environment_overrides",
+            "timeout_seconds",
+            "stdout_evidence_path",
+            "stderr_evidence_path",
+        ):
+            if command.get(field) != authority.get(field):
+                field_mismatches.append(
+                    {
+                        "command_index": index,
+                        "step_id": command.get("step_id"),
+                        "field": field,
+                        "expected": authority.get(field),
+                        "recorded": command.get(field),
+                    }
+                )
+
+    state_violations: list[str] = []
+    dry_run = run.get("dry_run") is True
+    run_status = run.get("status")
+    if dry_run:
+        if run_status != "planned":
+            state_violations.append("dry-run run.status must be planned")
+        if len(commands) != len(authority_commands):
+            state_violations.append("dry-run must record every manifest step")
+        for command in commands:
+            if command.get("status") != "planned" or command.get("return_code") is not None:
+                state_violations.append(
+                    "dry-run commands must have status planned and null return_code"
+                )
+                break
+    else:
+        if run_status == "executed":
+            if len(commands) != len(authority_commands) or not commands:
+                state_violations.append("executed run must record every manifest step")
+            if any(
+                command.get("status") != "completed"
+                or command.get("return_code") != 0
+                for command in commands
+            ):
+                state_violations.append("executed run requires completed/0 commands")
+        elif run_status == "execution_failed":
+            if not commands or len(commands) > len(authority_commands):
+                state_violations.append("failed run must record a non-empty manifest prefix")
+            if any(
+                command.get("status") != "completed"
+                or command.get("return_code") != 0
+                for command in commands[:-1]
+            ):
+                state_violations.append("only the final recorded command may fail")
+            if commands:
+                final = commands[-1]
+                final_status = final.get("status")
+                final_code = final.get("return_code")
+                if final_status == "failed":
+                    if not isinstance(final_code, int) or isinstance(final_code, bool) or final_code == 0:
+                        state_violations.append("failed command requires a nonzero integer return_code")
+                elif final_status in {"timeout", "launch_error"}:
+                    if final_code is not None:
+                        state_violations.append("timeout/launch_error requires null return_code")
+                else:
+                    state_violations.append(
+                        "execution_failed run must end with failed, timeout, or launch_error"
+                    )
+        else:
+            state_violations.append(
+                "non-dry run.status must be executed or execution_failed"
+            )
+
+    passed = not authority_errors and not field_mismatches and not state_violations
+    return {
+        "id": "command:protocol-closure",
+        "kind": "integrity",
+        "category": "command",
+        "canonical": True,
+        "required": True,
+        "passed": passed,
+        "authority": "manifest.resolved.yaml:_reprotrace.commands",
+        "semantic_record": "commands.json",
+        "archive_record": "commands.jsonl",
+        "manifest_step_ids": [step.get("id") for step in manifest_steps],
+        "recorded_step_ids": [command.get("step_id") for command in commands],
+        "authority_errors": authority_errors,
+        "field_mismatches": field_mismatches,
+        "state_violations": state_violations,
+    }
 
 
 def _input_declaration_closure_check(
@@ -544,23 +937,6 @@ def _artifact_declaration_closure_check(
     }
 
 
-def _bundle_artifact_pattern(declared_path: Any) -> tuple[str, bool] | None:
-    if not isinstance(declared_path, str):
-        return None
-    suffix: str | None = None
-    for prefix in ("{run_dir}/", "{run_dir}\\"):
-        if declared_path.startswith(prefix):
-            suffix = declared_path[len(prefix) :].replace("\\", "/")
-            break
-    if suffix is None:
-        return None
-    try:
-        normalized = normalize_bundle_path(suffix, label="bundle artifact declaration")
-    except ConfigError:
-        return None
-    return normalized, not any(character in normalized for character in "*?[")
-
-
 def _artifact_bundle_scope_check(
     resolved_manifest: Mapping[str, Any],
     artifacts: Sequence[Mapping[str, Any]],
@@ -569,7 +945,7 @@ def _artifact_bundle_scope_check(
         (step["id"], declared_path): pattern
         for step in resolved_manifest.get("run", {}).get("steps", [])
         for declared_path in step.get("artifacts", [])
-        if (pattern := _bundle_artifact_pattern(declared_path)) is not None
+        if (pattern := bundle_artifact_pattern(declared_path)) is not None
     }
     violations: list[dict[str, Any]] = []
     checked_matches = 0
@@ -582,14 +958,22 @@ def _artifact_bundle_scope_check(
         pattern = bundle_patterns.get(key)
         if pattern is None:
             continue
-        normalized_pattern, exact_path = pattern
+        seen_evidence_paths: set[str] = set()
         for match_index, match in enumerate(declaration.get("matches", [])):
             checked_matches += 1
             reasons: list[str] = []
             if match.get("path_scope") != "bundle":
                 reasons.append("bundle declaration recorded as external")
-            elif exact_path and match.get("evidence_path") != normalized_pattern:
-                reasons.append("bundle evidence_path differs from exact declaration")
+            else:
+                evidence_path = match.get("evidence_path")
+                if not bundle_artifact_path_matches(pattern, evidence_path):
+                    reasons.append(
+                        "bundle evidence_path does not match canonical declaration pattern"
+                    )
+                if evidence_path in seen_evidence_paths:
+                    reasons.append("duplicate bundle evidence_path within declaration")
+                elif isinstance(evidence_path, str):
+                    seen_evidence_paths.add(evidence_path)
             if reasons:
                 violations.append(
                     {
@@ -613,6 +997,7 @@ def _artifact_bundle_scope_check(
         "checked_match_count": checked_matches,
         "violations": violations,
         "scope_authority": "manifest.resolved.yaml+bundle-local records",
+        "match_semantics": "canonical-posix-segment-glob-v1",
     }
 
 
@@ -663,6 +1048,8 @@ def _strict_number_equal(recorded: Any, recomputed: float) -> bool:
     return (
         not isinstance(recorded, bool)
         and isinstance(recorded, (int, float))
+        and _is_finite_number(recorded)
+        and _is_finite_number(recomputed)
         and float(recorded) == recomputed
     )
 
@@ -735,7 +1122,7 @@ def _schema_one_verification(
     resolved_manifest: dict[str, Any],
     metric_sources_value: Any,
 ) -> dict[str, Any]:
-    _validate_schema_one_records(run, inputs, commands, artifacts)
+    _validate_schema_one_records(run, inputs, commands, artifacts, metrics)
     metric_sources = validate_metric_sources_record(metric_sources_value)
     index = read_evidence_index(directory)
     index_validation = validate_evidence_index(directory, index)
@@ -840,6 +1227,7 @@ def _schema_one_verification(
                 dry_run=run.get("dry_run") is True,
             ),
             _artifact_bundle_scope_check(resolved_manifest, artifacts),
+            _command_protocol_closure_check(run, resolved_manifest, commands),
         )
     )
 
@@ -872,37 +1260,6 @@ def _schema_one_verification(
                         validated_paths=validated_paths,
                     )
                 )
-
-    manifest_step_ids = [
-        step["id"] for step in resolved_manifest.get("run", {}).get("steps", [])
-    ]
-    recorded_step_ids = [command.get("step_id") for command in commands]
-    command_prefix_is_valid = (
-        bool(recorded_step_ids)
-        and recorded_step_ids == manifest_step_ids[: len(recorded_step_ids)]
-        and (
-            run.get("dry_run") is True
-            or not all(
-                command.get("status") == "completed" and command.get("return_code") == 0
-                for command in commands
-            )
-            or recorded_step_ids == manifest_step_ids
-        )
-    )
-    if run.get("dry_run") is True:
-        command_prefix_is_valid = recorded_step_ids == manifest_step_ids
-    integrity_checks.append(
-        {
-            "id": "command:record-closure",
-            "kind": "structure",
-            "category": "command",
-            "canonical": True,
-            "required": True,
-            "passed": command_prefix_is_valid,
-            "manifest_step_ids": manifest_step_ids,
-            "recorded_step_ids": recorded_step_ids,
-        }
-    )
 
     for declaration_index, declaration in enumerate(artifacts):
         matches = declaration.get("matches", [])
@@ -1220,13 +1577,32 @@ def verify_bundle(run_dir: str | Path, *, write: bool = True) -> dict[str, Any]:
         missing = [name for name, path in schema_one_paths.items() if not path.exists()]
         if missing:
             raise ConfigError(f"invalid evidence bundle {directory}; missing: {', '.join(missing)}")
+        run = _require_record_object(
+            read_json(common_paths["run.json"], strict=True), "run.json"
+        )
 
-    source = read_source_record(common_paths["source.json"])
-    _require_record_object(read_json(common_paths["environment.json"]), "environment.json")
-    inputs = _require_record_list(read_json(common_paths["inputs.json"]), "inputs.json")
-    commands = _require_record_list(read_json(common_paths["commands.json"]), "commands.json")
-    artifacts = _require_record_list(read_json(common_paths["artifacts.json"]), "artifacts.json")
-    metrics = _require_record_list(read_json(common_paths["metrics.json"]), "metrics.json")
+    strict_json = run_schema == 1
+    source = read_source_record(
+        common_paths["source.json"], strict_json=strict_json
+    )
+    _require_record_object(
+        read_json(common_paths["environment.json"], strict=strict_json),
+        "environment.json",
+    )
+    inputs = _require_record_list(
+        read_json(common_paths["inputs.json"], strict=strict_json), "inputs.json"
+    )
+    commands = _require_record_list(
+        read_json(common_paths["commands.json"], strict=strict_json),
+        "commands.json",
+    )
+    artifacts = _require_record_list(
+        read_json(common_paths["artifacts.json"], strict=strict_json),
+        "artifacts.json",
+    )
+    metrics = _require_record_list(
+        read_json(common_paths["metrics.json"], strict=strict_json), "metrics.json"
+    )
     resolved_manifest = _read_resolved_manifest(common_paths["manifest.resolved.yaml"])
 
     if run_schema == 0:
@@ -1241,7 +1617,9 @@ def verify_bundle(run_dir: str | Path, *, write: bool = True) -> dict[str, Any]:
             resolved_manifest,
         )
     else:
-        metric_sources = read_json(schema_one_paths["metric_sources.json"])
+        metric_sources = read_json(
+            schema_one_paths["metric_sources.json"], strict=True
+        )
         result = _schema_one_verification(
             directory,
             run,

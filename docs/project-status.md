@@ -2,12 +2,14 @@
 
 更新时间：2026-08-08
 
-## C5.0 acceptance snapshot
+## C5.0 acceptance snapshots
 
 - 仓库：`https://github.com/YaoYang-123456/ReproTrace`
 - acceptance 分支：`codex/c5.0-assurance-verifier`
 - C5.0 基线：`main@0fc67da9bac302ec1d5c2f660b325d7225ee3067`
 - Stage 6 preflight commit：`53f34b85784794d4c9ba4e7235b0a2d701acbc36`
+- Stage 6.1 audit-fix branch：`codex/c5.0-audit-fixes`
+- Stage 6.1 authoritative base：`921943155f04da7839a43837b8961bdc5b5f1dc0`
 - snapshot 日期：2026-08-08
 - Stage 6 开始时工作树：干净
 
@@ -144,6 +146,35 @@ metrics、derived metrics、resolved manifest、metadata 和 index，使 bundle 
 C5.0 的已知边界包括恶意 producer 完整一致伪造、execution authenticity、independent
 replay、scientific reproduction，以及 external input/artifact 的 metadata-only coverage。
 Evidence root 是 snapshot identifier，不是签名、attestation 或可信来源证明。
+
+## C5.0 Stage 6.1 protocol closure hardening
+
+独立最终审计发现的 deterministic protocol/closure gaps 已在独立 audit-fix 分支关闭：
+
+- `manifest.resolved.yaml._reprotrace.commands` 记录 producer-finalized command protocol；
+  `commands.json` 是唯一 semantic authority，逐 step 绑定 requested/resolved argv、cwd、
+  environment overrides、timeout 和固定 stdout/stderr evidence identity；
+- command status 严格限定为 `planned`、`completed`、`failed`、`timeout`、`launch_error`，
+  return code 必须是 integer/null 且 bool 不作为 0；dry-run、完整成功和失败前缀分别受明确
+  `run.status` state machine 约束；
+- `commands.jsonl` 继续进入 evidence index，但角色改为 `command_archive`，不再作为 verifier
+  未实际消费的第二份 semantic command record；
+- `{run_dir}` artifact 使用 canonical POSIX segment glob：`*`/`?`/bracket 不跨 `/`，完整
+  `**` segment 匹配零个或多个 segments；每个 bundle-local match 必须满足 manifest pattern，
+  同一 declaration 内 duplicate canonical evidence path 被拒绝，零匹配继续合法；
+- expected 必须 finite，atol/rtol 必须 finite 且非负，timeout 若存在必须 finite 且为正；
+  bool 不作为数值，CSV/regex NaN/Infinity fail closed，JSON evidence writer 不输出
+  NaN/Infinity token。
+
+2026-08-08 Stage 6.1 本地验证：定向 assurance/manifest suite `70 passed`；默认编码和
+`python -X utf8=0`（`encoding=cp1252`）完整套件均为 `196 passed, 4 skipped`。四个 skip
+仍仅为本机普通 symlink 权限；Windows junction tests 实际执行。真实 tiny CPU bundle 的
+command protocol check、index roles、独立 verify/report 均通过，最终为 `complete`、
+`metric_derivations_recomputed`、`recorded_success`、`matched`，evidence root 为
+`ea3addf7e1ce1e4841cb5d5ad809c4d45bb514e0ae26e6fb951479f76216bce7`。
+
+Stage 6.1 明确没有改变 verifier-time hash/open/parse TOCTOU，也没有提供 immutable
+same-object snapshot。该问题只保留为需要单独授权的 Stage 6.2 研究/实施范围。
 
 ## C4 source evidence
 

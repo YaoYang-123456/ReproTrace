@@ -54,3 +54,18 @@ identity, or proof that the recorded execution occurred.
 - Legacy schema-0 bundles remain readable but never exceed `recorded` and never
   derive a new scientific result from historical compatibility fields.
 
+## Stage 6.1 protocol-closure hardening
+
+Additional audit regressions bind command argv/cwd/environment/timeout and log
+identities to the resolved manifest protocol, reject non-enum command status and
+boolean return codes, enforce the command/run state machine, and demonstrate
+that a rehashed `commands.jsonl` archive is not a second semantic authority.
+
+Artifact regressions rebuild a valid index around an out-of-pattern log file or
+a duplicate canonical match and prove that wildcard manifest membership still
+fails. Numeric regressions reject boolean expected values, non-finite or
+negative tolerances, invalid timeouts, and non-finite recomputed metric values.
+
+These deterministic closure tests do not address a file changing between
+verifier hash/open/parse operations. Immutable snapshot identity and
+verifier-time TOCTOU are explicitly deferred beyond Stage 6.1.

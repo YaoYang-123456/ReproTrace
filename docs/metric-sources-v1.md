@@ -80,6 +80,13 @@ cached derived compatibility data and adds `source_evidence_paths` without
 removing the historical `source_paths` field. `metric_sources.json` does not
 carry expected values or tolerances.
 
+The numeric domain is strict. Expected values must be finite; tolerances must be
+finite and non-negative. Parsed CSV or regex values must also be finite, so NaN
+and positive/negative infinity fail evidence derivation rather than entering
+`metrics.json` or a verification result. Booleans are not numeric values, and
+strict JSON evidence serialization does not emit non-standard NaN/Infinity
+tokens.
+
 ## Assurance and race boundary
 
 Raw evidence capture alone does not establish that the producer execution was

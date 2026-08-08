@@ -16,7 +16,7 @@ CORE_EVIDENCE_ROLES: dict[str, tuple[str, ...]] = {
     "environment.json": ("record",),
     "inputs.json": ("record",),
     "commands.json": ("command_record", "record"),
-    "commands.jsonl": ("command_record", "record"),
+    "commands.jsonl": ("command_archive", "record"),
     "artifacts.json": ("record",),
     "metric_sources.json": ("record",),
     "metrics.json": ("record",),

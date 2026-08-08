@@ -70,6 +70,44 @@ outcome and expectation compatibility checks. Coverage explicitly distinguishes
 bundle-local evidence from external metadata-only records. No presentation
 claims execution authenticity, independent replay, or scientific reproduction.
 
+### Command protocol authority
+
+`manifest.resolved.yaml` contains a producer-finalized `_reprotrace` command
+protocol. Each entry preserves the manifest step order, requested argv,
+resolved argv, declared and resolved cwd, declared and resolved environment
+overrides, timeout, and canonical stdout/stderr evidence identities.
+`commands.json` is the only semantic execution record and must match the
+corresponding protocol prefix exactly. `commands.jsonl` is retained and indexed
+as a convenience/archive export, but the verifier neither parses it nor treats
+it as a second semantic authority.
+
+Command statuses are limited to `planned`, `completed`, `failed`, `timeout`, and
+`launch_error`. Dry-runs contain every manifest step as `planned` with a null
+return code and `run.status=planned`. A successful normal run contains every
+step as `completed` with integer return code zero and `run.status=executed`. A
+failed run contains a non-empty manifest prefix: all prior records are
+`completed/0`, the final record is `failed/nonzero`, `timeout/null`, or
+`launch_error/null`, and `run.status=execution_failed`. Boolean return codes are
+never integers for this contract.
+
+### Artifact membership and numeric domain
+
+Bundle-local artifact declarations use normalized POSIX relative paths.
+`*`, `?`, and bracket expressions match inside one path segment; a complete
+`**` segment matches zero or more segments. Every recorded match must satisfy
+its authoritative manifest pattern, and duplicate canonical evidence paths
+inside one declaration are rejected. Zero matches remain legal. Producer and
+verifier call the same matcher after producer-side discovery.
+
+Expected values must be finite. `atol` and `rtol` must be finite and
+non-negative; a present timeout must be finite and positive. Booleans are not
+numeric aliases. CSV/regex extraction rejects NaN and infinity, and JSON
+evidence writers use strict serialization that cannot emit NaN/Infinity tokens.
+
+These checks do not make verification an immutable transaction. C5 still hashes
+and later opens/parses files in separate operations, so verifier-time TOCTOU and
+same-object snapshot binding remain explicit non-goals for Stage 6.1.
+
 ## Adversarial verification boundary
 
 C5 regression coverage deliberately separates byte integrity, derivation

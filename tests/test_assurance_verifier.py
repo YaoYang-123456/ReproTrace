@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import copy
 import shutil
 import sys
 from pathlib import Path
@@ -9,7 +10,10 @@ import pytest
 import yaml
 
 from reprotrace.evidence import read_evidence_index, write_evidence_index
+from reprotrace.closure import evidence_dependency_declarations
+from reprotrace.errors import ConfigError
 from reprotrace.io import read_json, sha256_file, write_json
+from reprotrace.protocol import join_protocol_path
 from reprotrace.runner import run_manifest
 from reprotrace.verifier import verify_bundle
 
@@ -84,6 +88,21 @@ def refresh_index(run_dir: Path) -> str:
     _, root = write_evidence_index(
         run_dir,
         [{"path": entry["path"], "roles": entry["roles"]} for entry in index["entries"]],
+    )
+    return root
+
+
+def rebuild_index_from_records(run_dir: Path) -> str:
+    _, root = write_evidence_index(
+        run_dir,
+        evidence_dependency_declarations(
+            run=read_json(run_dir / "run.json"),
+            source=read_json(run_dir / "source.json"),
+            inputs=read_json(run_dir / "inputs.json"),
+            commands=read_json(run_dir / "commands.json"),
+            artifacts=read_json(run_dir / "artifacts.json"),
+            metric_sources=read_json(run_dir / "metric_sources.json"),
+        ),
     )
     return root
 
@@ -511,21 +530,10 @@ def test_v10_origin_metadata_is_not_used_for_schema_one_io(tmp_path: Path) -> No
     trap = trap_dir / "trap.txt"
     trap.write_text("score\n999.0\n", encoding="utf-8")
 
-    run = read_json(run_dir / "run.json")
-    run["project_root"] = str(trap_dir)
-    write_json(run_dir / "run.json", run)
-    resolved_manifest_path = run_dir / "manifest.resolved.yaml"
-    resolved_manifest = yaml.safe_load(resolved_manifest_path.read_text(encoding="utf-8"))
-    resolved_manifest["project"]["root"] = str(trap_dir)
-    resolved_manifest["run"]["output_root"] = str(trap_dir)
-    resolved_manifest_path.write_text(
-        yaml.safe_dump(resolved_manifest, sort_keys=False), encoding="utf-8"
-    )
     inputs = read_json(run_dir / "inputs.json")
     inputs[0]["path"] = str(trap)
     write_json(run_dir / "inputs.json", inputs)
     commands = read_json(run_dir / "commands.json")
-    commands[0]["cwd"] = str(trap_dir)
     commands[0]["stdout_path"] = str(trap)
     commands[0]["stderr_path"] = str(trap)
     write_json(run_dir / "commands.json", commands)
@@ -639,6 +647,22 @@ def test_coherent_producer_forgery_is_an_explicit_undetectable_boundary(
     resolved["project"]["root"] = "C:/forged/project"
     resolved["run"]["output_root"] = "C:/forged/output"
     resolved["metrics"][0]["expected"] = 4.0
+    run = read_json(run_dir / "run.json")
+    forged_run_dir = join_protocol_path("C:/forged/output", run["run_id"])
+    runtime_context = resolved["_reprotrace"]["runtime_context"]
+    runtime_context.update(
+        project_root="C:/forged/project",
+        run_dir=forged_run_dir,
+    )
+    protocol = resolved["_reprotrace"]["commands"][0]
+    protocol.update(
+        declared_cwd="C:/forged/project",
+        cwd="C:/forged/project",
+    )
+    protocol["environment_overrides"].update(
+        REPROTRACE_PROJECT_ROOT="C:/forged/project",
+        REPROTRACE_RUN_DIR=forged_run_dir,
+    )
     resolved_path.write_text(
         yaml.safe_dump(resolved, sort_keys=False), encoding="utf-8"
     )
@@ -646,6 +670,7 @@ def test_coherent_producer_forgery_is_an_explicit_undetectable_boundary(
     commands = read_json(run_dir / "commands.json")
     commands[0].update(
         cwd="C:/forged/project",
+        environment_overrides=protocol["environment_overrides"],
         started_at="forged-start",
         finished_at="forged-finish",
         elapsed_seconds=1.0,
@@ -670,7 +695,6 @@ def test_coherent_producer_forgery_is_an_explicit_undetectable_boundary(
     environment = read_json(run_dir / "environment.json")
     environment["platform"] = "forged-platform"
     write_json(run_dir / "environment.json", environment)
-    run = read_json(run_dir / "run.json")
     run["project_root"] = "C:/forged/project"
     write_json(run_dir / "run.json", run)
     refresh_index(run_dir)
@@ -688,6 +712,270 @@ def test_coherent_producer_forgery_is_an_explicit_undetectable_boundary(
         "independent_replay": "not_performed",
         "scientific_reproduction": "not_established",
     }
+
+
+@pytest.mark.parametrize("field", ["argv", "cwd", "environment_overrides", "timeout_seconds"])
+def test_command_protocol_unbound_mutation_cannot_reach_integrity_assurance(
+    tmp_path: Path, field: str
+) -> None:
+    run_dir, _ = run_manifest(make_manifest(tmp_path / "project"))
+    commands = read_json(run_dir / "commands.json")
+    mutations: dict[str, object] = {
+        "argv": ["forged", "--protocol"],
+        "cwd": "C:/forged/cwd",
+        "environment_overrides": {
+            **commands[0]["environment_overrides"],
+            "FORGED": "1",
+        },
+        "timeout_seconds": 15,
+    }
+    commands[0][field] = mutations[field]
+    write_json(run_dir / "commands.json", commands)
+    refresh_index(run_dir)
+
+    verification = verify_bundle(run_dir, write=False)
+
+    assert check_by_id(verification, "bundle:index")["passed"] is True
+    assert check_by_id(verification, "bundle:closure")["passed"] is True
+    protocol = check_by_id(verification, "command:protocol-closure")
+    assert protocol["passed"] is False
+    assert any(item["field"] == field for item in protocol["field_mismatches"])
+    assert verification["verification_status"] == "incomplete"
+    assert verification["checks_passed"] is False
+    assert verification["assurance_level"] == "recorded"
+    assert verification["evidence_root_sha256"] is None
+
+
+def test_command_log_role_rebound_is_rejected_by_manifest_protocol(
+    tmp_path: Path,
+) -> None:
+    run_dir, _ = run_manifest(
+        make_manifest(tmp_path / "project", extra_artifact=True)
+    )
+    commands = read_json(run_dir / "commands.json")
+    commands[0]["stdout_evidence_path"] = "artifacts/metrics.csv"
+    commands[0]["stderr_evidence_path"] = "artifacts/notes.txt"
+    write_json(run_dir / "commands.json", commands)
+    (run_dir / "logs" / "produce.stdout.log").unlink()
+    (run_dir / "logs" / "produce.stderr.log").unlink()
+    rebuild_index_from_records(run_dir)
+
+    verification = verify_bundle(run_dir, write=False)
+
+    assert check_by_id(verification, "bundle:index")["passed"] is True
+    assert check_by_id(verification, "bundle:closure")["passed"] is True
+    assert check_by_id(
+        verification, "closure:command-log:produce:stdout"
+    )["passed"] is True
+    assert check_by_id(
+        verification, "closure:command-log:produce:stderr"
+    )["passed"] is True
+    assert check_by_id(verification, "command:protocol-closure")["passed"] is False
+    assert verification["assurance_level"] == "recorded"
+    assert verification["evidence_root_sha256"] is None
+
+
+@pytest.mark.parametrize(
+    ("status", "return_code", "error"),
+    [("banana", 0, "status"), ("completed", False, "return_code")],
+)
+def test_invalid_command_schema_fails_closed(
+    tmp_path: Path,
+    status: str,
+    return_code: int | bool,
+    error: str,
+) -> None:
+    run_dir, _ = run_manifest(make_manifest(tmp_path / "project"))
+    commands = read_json(run_dir / "commands.json")
+    commands[0].update(status=status, return_code=return_code)
+    write_json(run_dir / "commands.json", commands)
+    refresh_index(run_dir)
+
+    with pytest.raises(ConfigError, match=error):
+        verify_bundle(run_dir, write=False)
+
+
+@pytest.mark.parametrize(
+    ("run_status", "command_status", "return_code"),
+    [("execution_failed", "completed", 0), ("execution_failed", "failed", 0)],
+)
+def test_invalid_command_state_machine_is_canonical_failure(
+    tmp_path: Path,
+    run_status: str,
+    command_status: str,
+    return_code: int,
+) -> None:
+    run_dir, _ = run_manifest(make_manifest(tmp_path / "project"))
+    run = read_json(run_dir / "run.json")
+    run["status"] = run_status
+    write_json(run_dir / "run.json", run)
+    commands = read_json(run_dir / "commands.json")
+    commands[0].update(status=command_status, return_code=return_code)
+    write_json(run_dir / "commands.json", commands)
+    refresh_index(run_dir)
+
+    verification = verify_bundle(run_dir, write=False)
+
+    protocol = check_by_id(verification, "command:protocol-closure")
+    assert protocol["passed"] is False
+    assert protocol["state_violations"]
+    assert verification["assurance_level"] == "recorded"
+
+
+def test_commands_jsonl_is_integrity_checked_archive_not_semantic_authority(
+    tmp_path: Path,
+) -> None:
+    run_dir, _ = run_manifest(make_manifest(tmp_path / "project"))
+    (run_dir / "commands.jsonl").write_text(
+        '{"archive":"producer convenience export"}\n', encoding="utf-8"
+    )
+    refresh_index(run_dir)
+
+    verification = verify_bundle(run_dir, write=False)
+    entries = {entry["path"]: entry for entry in read_evidence_index(run_dir)["entries"]}
+
+    assert entries["commands.json"]["roles"] == ["command_record", "record"]
+    assert entries["commands.jsonl"]["roles"] == ["command_archive", "record"]
+    assert verification["verification_status"] == "complete"
+    assert verification["assurance_level"] == "metric_derivations_recomputed"
+
+
+def test_pre_protocol_schema_one_bundle_remains_readable_but_cannot_uplift(
+    tmp_path: Path,
+) -> None:
+    run_dir, _ = run_manifest(make_manifest(tmp_path / "project"))
+    resolved_path = run_dir / "manifest.resolved.yaml"
+    resolved = yaml.safe_load(resolved_path.read_text(encoding="utf-8"))
+    del resolved["_reprotrace"]
+    resolved_path.write_text(
+        yaml.safe_dump(resolved, sort_keys=False), encoding="utf-8"
+    )
+    refresh_index(run_dir)
+
+    verification = verify_bundle(run_dir, write=False)
+
+    protocol = check_by_id(verification, "command:protocol-closure")
+    assert protocol["passed"] is False
+    assert protocol["authority_errors"][0]["reason"] == "protocol metadata is missing"
+    assert verification["verification_status"] == "incomplete"
+    assert verification["assurance_level"] == "recorded"
+
+
+def test_schema_one_protocol_json_rejects_non_finite_tokens(tmp_path: Path) -> None:
+    run_dir, _ = run_manifest(make_manifest(tmp_path / "project"))
+    commands = read_json(run_dir / "commands.json")
+    commands[0]["elapsed_seconds"] = float("nan")
+    (run_dir / "commands.json").write_text(
+        json.dumps(commands, allow_nan=True), encoding="utf-8"
+    )
+    refresh_index(run_dir)
+
+    with pytest.raises(ConfigError, match="non-finite JSON number"):
+        verify_bundle(run_dir, write=False)
+
+
+def test_wildcard_artifact_rebound_cannot_be_reindexed_away(tmp_path: Path) -> None:
+    run_dir, _ = run_manifest(
+        make_manifest(tmp_path / "project", extra_artifact=True)
+    )
+    wildcard = "{run_dir}/artifacts/*.txt"
+    resolved_path = run_dir / "manifest.resolved.yaml"
+    resolved = yaml.safe_load(resolved_path.read_text(encoding="utf-8"))
+    resolved["run"]["steps"][0]["artifacts"] = [wildcard]
+    resolved_path.write_text(
+        yaml.safe_dump(resolved, sort_keys=False), encoding="utf-8"
+    )
+    rebound = run_dir / "logs" / "produce.stdout.log"
+    artifacts = [
+        {
+            "step_id": "produce",
+            "declared_path": wildcard,
+            "resolved_pattern": str(rebound),
+            "matches": [
+                {
+                    "path": str(rebound),
+                    "exists": True,
+                    "kind": "file",
+                    "size_bytes": rebound.stat().st_size,
+                    "sha256": sha256_file(rebound),
+                    "path_scope": "bundle",
+                    "evidence_path": "logs/produce.stdout.log",
+                }
+            ],
+        }
+    ]
+    write_json(run_dir / "artifacts.json", artifacts)
+    rebuild_index_from_records(run_dir)
+
+    verification = verify_bundle(run_dir, write=False)
+
+    assert check_by_id(verification, "bundle:index")["passed"] is True
+    assert check_by_id(verification, "bundle:closure")["passed"] is True
+    assert check_by_id(verification, "artifact:declaration-closure")["passed"] is True
+    scope = check_by_id(verification, "artifact:bundle-scope-closure")
+    assert scope["passed"] is False
+    assert "does not match" in scope["violations"][0]["reasons"][0]
+    assert verification["assurance_level"] == "recorded"
+
+
+def test_wildcard_artifact_duplicate_evidence_path_is_rejected(tmp_path: Path) -> None:
+    run_dir, _ = run_manifest(
+        make_manifest(tmp_path / "project", extra_artifact=True)
+    )
+    wildcard = "{run_dir}/artifacts/*.txt"
+    resolved_path = run_dir / "manifest.resolved.yaml"
+    resolved = yaml.safe_load(resolved_path.read_text(encoding="utf-8"))
+    resolved["run"]["steps"][0]["artifacts"] = [wildcard]
+    resolved_path.write_text(
+        yaml.safe_dump(resolved, sort_keys=False), encoding="utf-8"
+    )
+    artifacts = read_json(run_dir / "artifacts.json")
+    note_match = copy.deepcopy(artifacts[1]["matches"][0])
+    write_json(
+        run_dir / "artifacts.json",
+        [
+            {
+                "step_id": "produce",
+                "declared_path": wildcard,
+                "resolved_pattern": str(run_dir / "artifacts" / "*.txt"),
+                "matches": [note_match, copy.deepcopy(note_match)],
+            }
+        ],
+    )
+    rebuild_index_from_records(run_dir)
+
+    verification = verify_bundle(run_dir, write=False)
+
+    assert check_by_id(verification, "bundle:closure")["passed"] is True
+    scope = check_by_id(verification, "artifact:bundle-scope-closure")
+    assert scope["passed"] is False
+    assert "duplicate" in scope["violations"][0]["reasons"][0]
+
+
+def test_non_finite_recomputed_actual_fails_closed(tmp_path: Path) -> None:
+    run_dir, _ = run_manifest(make_manifest(tmp_path / "project"))
+    raw = run_dir / "artifacts" / "metrics.csv"
+    raw.write_text("score\nNaN\n", encoding="utf-8")
+    size_bytes = raw.stat().st_size
+    digest = sha256_file(raw)
+    sources = read_json(run_dir / "metric_sources.json")
+    sources["metrics"][0]["sources"][0].update(
+        size_bytes=size_bytes, sha256=digest
+    )
+    write_json(run_dir / "metric_sources.json", sources)
+    artifacts = read_json(run_dir / "artifacts.json")
+    artifacts[0]["matches"][0].update(size_bytes=size_bytes, sha256=digest)
+    write_json(run_dir / "artifacts.json", artifacts)
+    refresh_index(run_dir)
+
+    verification = verify_bundle(run_dir, write=False)
+    derived = check_by_id(verification, "metric:score:derived-match")
+
+    assert check_by_id(verification, "bundle:index")["passed"] is True
+    assert derived["passed"] is False
+    assert "finite" in derived["reason"]
+    assert verification["assurance_level"] == "bundle_integrity_checked"
+    assert verification["result_status"] == "indeterminate"
 
 
 def test_derived_sample_count_rejects_json_boolean_alias(tmp_path: Path) -> None:
