@@ -86,6 +86,12 @@ def test_tiny_run_creates_passing_bundle(tmp_path: Path) -> None:
     run_dir, verification = run_manifest(manifest)
 
     assert verification["passed"] is True
+    assert read_json(run_dir / "run.json")["schema_version"] == 1
+    assert (run_dir / "evidence.index.json").is_file()
+    assert verification["evidence_root_sha256"] is not None
+    assert verification["assurance_level"] == "metric_derivations_recomputed"
+    assert verification["result_status"] == "matched"
+    assert verification["checks_passed"] is True
     metric = read_json(run_dir / "metrics.json")[0]
     metric_sources = read_json(run_dir / "metric_sources.json")
     assert metric["actual"] == 3.0

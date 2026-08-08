@@ -69,6 +69,11 @@ merely because they exist in the directory.
 
 The verifier derives the same expected closure independently from bundle
 records, requires exact path and role agreement, validates every indexed byte,
-and emits `evidence_root_sha256` only when the complete integrity contract
-passes. The root remains a snapshot identifier, never an authenticity proof.
-Legacy run schema 0 is not migrated or upgraded.
+and independently requires those input and artifact records to correspond
+exactly to the declarations in `manifest.resolved.yaml`. This second closure
+prevents deletion or insertion of a record from being hidden by rebuilding the
+index. Bundle artifacts declared with `{run_dir}` cannot be reclassified as
+external to evade index membership. The verifier emits `evidence_root_sha256`
+only when the complete integrity contract passes. The root remains a snapshot
+identifier, never an authenticity proof. Legacy run schema 0 is not migrated or
+upgraded.

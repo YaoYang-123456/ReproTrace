@@ -5,6 +5,7 @@ from __future__ import annotations
 import math
 import os
 import stat
+from collections import Counter
 from collections.abc import Mapping, Sequence
 from pathlib import Path
 from typing import Any
@@ -22,7 +23,12 @@ from .assurance import (
     recorded_execution_status,
 )
 from .closure import evidence_dependency_declarations
-from .evidence import read_evidence_index, resolve_bundle_file, validate_evidence_index
+from .evidence import (
+    normalize_bundle_path,
+    read_evidence_index,
+    resolve_bundle_file,
+    validate_evidence_index,
+)
 from .errors import ConfigError
 from .io import read_json, read_source_record, sha256_file, utc_now, write_json_atomic
 from .manifest import validate_manifest
@@ -166,6 +172,28 @@ def _recorded_outcome_checks(commands: Sequence[Mapping[str, Any]]) -> list[dict
     ]
 
 
+def _recorded_artifact_checks(
+    artifacts: Sequence[Mapping[str, Any]],
+) -> list[dict[str, Any]]:
+    return [
+        {
+            "id": f"artifact:{declaration.get('step_id')}:{declaration_index}:recorded",
+            "kind": "compatibility",
+            "category": "artifact",
+            "canonical": False,
+            "required": True,
+            "passed": isinstance(declaration.get("matches"), list)
+            and bool(declaration["matches"]),
+            "reason": (
+                None
+                if declaration.get("matches")
+                else "declared artifact matched no paths"
+            ),
+        }
+        for declaration_index, declaration in enumerate(artifacts)
+    ]
+
+
 def _legacy_metric_checks(metrics: Sequence[Mapping[str, Any]]) -> list[dict[str, Any]]:
     checks: list[dict[str, Any]] = []
     for metric in metrics:
@@ -250,19 +278,7 @@ def _legacy_verification(
                 }
             )
         legacy_checks.extend(_recorded_outcome_checks(commands))
-        for declaration_index, declaration in enumerate(artifacts):
-            matches = declaration.get("matches", [])
-            legacy_checks.append(
-                {
-                    "id": f"artifact:{declaration.get('step_id')}:{declaration_index}:recorded",
-                    "kind": "compatibility",
-                    "category": "artifact",
-                    "canonical": False,
-                    "required": True,
-                    "passed": isinstance(matches, list) and bool(matches),
-                    "reason": None if matches else "declared artifact matched no paths",
-                }
-            )
+        legacy_checks.extend(_recorded_artifact_checks(artifacts))
         legacy_checks.extend(_legacy_metric_checks(metrics))
 
     status, preflight_passed = _compatibility_status(run, legacy_checks)
@@ -360,6 +376,244 @@ def _validate_schema_one_records(
                 match,
                 f"artifacts.json declaration {declaration_index} match {match_index}",
             )
+
+
+def _input_declaration_closure_check(
+    resolved_manifest: Mapping[str, Any],
+    inputs: Sequence[Mapping[str, Any]],
+) -> dict[str, Any]:
+    expected = [
+        {
+            "id": item["id"],
+            "declared_path": item["path"],
+            "input_kind": item.get("kind", "unspecified"),
+            "required": bool(item.get("required", True)),
+        }
+        for item in resolved_manifest.get("inputs", [])
+    ]
+    expected_by_id = {item["id"]: item for item in expected}
+    actual_ids = [item.get("id") for item in inputs]
+    valid_actual_ids = [
+        value for value in actual_ids if isinstance(value, str) and value
+    ]
+    actual_id_counts = Counter(valid_actual_ids)
+    duplicate_ids = sorted(
+        input_id for input_id, count in actual_id_counts.items() if count > 1
+    )
+    invalid_record_indexes = [
+        index
+        for index, input_id in enumerate(actual_ids)
+        if not isinstance(input_id, str) or not input_id
+    ]
+    actual_by_id: dict[str, Mapping[str, Any]] = {}
+    for item in inputs:
+        input_id = item.get("id")
+        if isinstance(input_id, str) and input_id and input_id not in actual_by_id:
+            actual_by_id[input_id] = item
+
+    expected_ids = set(expected_by_id)
+    actual_id_set = set(actual_by_id)
+    missing_ids = sorted(expected_ids - actual_id_set)
+    extra_ids = sorted(actual_id_set - expected_ids)
+    field_mismatches: list[dict[str, Any]] = []
+    for input_id in sorted(expected_ids & actual_id_set):
+        declaration = expected_by_id[input_id]
+        record = actual_by_id[input_id]
+        for field in ("declared_path", "input_kind", "required"):
+            actual = record.get(field)
+            expected_value = declaration[field]
+            equal = actual == expected_value
+            if field == "required":
+                equal = isinstance(actual, bool) and actual is expected_value
+            if not equal:
+                field_mismatches.append(
+                    {
+                        "id": input_id,
+                        "field": field,
+                        "expected": expected_value,
+                        "recorded": actual,
+                    }
+                )
+
+    passed = not any(
+        (
+            duplicate_ids,
+            invalid_record_indexes,
+            missing_ids,
+            extra_ids,
+            field_mismatches,
+        )
+    )
+    return {
+        "id": "input:declaration-closure",
+        "kind": "integrity",
+        "category": "input",
+        "canonical": True,
+        "required": True,
+        "passed": passed,
+        "manifest_ids": sorted(expected_ids),
+        "recorded_ids": sorted(valid_actual_ids),
+        "missing_ids": missing_ids,
+        "extra_ids": extra_ids,
+        "duplicate_ids": duplicate_ids,
+        "invalid_record_indexes": invalid_record_indexes,
+        "field_mismatches": field_mismatches,
+        "authority": "manifest.resolved.yaml",
+    }
+
+
+def _artifact_key_record(step_id: str, declared_path: str) -> dict[str, str]:
+    return {"step_id": step_id, "declared_path": declared_path}
+
+
+def _artifact_declaration_closure_check(
+    resolved_manifest: Mapping[str, Any],
+    artifacts: Sequence[Mapping[str, Any]],
+    *,
+    dry_run: bool,
+) -> dict[str, Any]:
+    expected_keys = [
+        (step["id"], declared_path)
+        for step in resolved_manifest.get("run", {}).get("steps", [])
+        for declared_path in step.get("artifacts", [])
+    ]
+    expected_counts = Counter(expected_keys)
+    expected_duplicates = sorted(
+        key for key, count in expected_counts.items() if count > 1
+    )
+
+    actual_keys: list[tuple[str, str]] = []
+    invalid_record_indexes: list[int] = []
+    for index, declaration in enumerate(artifacts):
+        step_id = declaration.get("step_id")
+        declared_path = declaration.get("declared_path")
+        if (
+            not isinstance(step_id, str)
+            or not step_id
+            or not isinstance(declared_path, str)
+            or not declared_path
+        ):
+            invalid_record_indexes.append(index)
+            continue
+        actual_keys.append((step_id, declared_path))
+    actual_counts = Counter(actual_keys)
+    actual_duplicates = sorted(
+        key for key, count in actual_counts.items() if count > 1
+    )
+
+    expected_set = set(expected_counts)
+    actual_set = set(actual_counts)
+    missing = [] if dry_run else sorted(expected_set - actual_set)
+    extra = sorted(actual_set - expected_set)
+    unexpected_planning_record_indexes = list(range(len(artifacts))) if dry_run else []
+    passed = not any(
+        (
+            expected_duplicates,
+            actual_duplicates,
+            invalid_record_indexes,
+            missing,
+            extra,
+            unexpected_planning_record_indexes,
+        )
+    )
+    return {
+        "id": "artifact:declaration-closure",
+        "kind": "integrity",
+        "category": "artifact",
+        "canonical": True,
+        "required": True,
+        "passed": passed,
+        "manifest_declarations": [
+            _artifact_key_record(*key) for key in sorted(expected_set)
+        ],
+        "recorded_declarations": [
+            _artifact_key_record(*key) for key in sorted(actual_set)
+        ],
+        "missing": [_artifact_key_record(*key) for key in missing],
+        "extra": [_artifact_key_record(*key) for key in extra],
+        "manifest_duplicates": [
+            _artifact_key_record(*key) for key in expected_duplicates
+        ],
+        "recorded_duplicates": [
+            _artifact_key_record(*key) for key in actual_duplicates
+        ],
+        "invalid_record_indexes": invalid_record_indexes,
+        "unexpected_planning_record_indexes": unexpected_planning_record_indexes,
+        "authority": "manifest.resolved.yaml",
+        "applicability": "planning_deferred" if dry_run else "executed_bundle",
+    }
+
+
+def _bundle_artifact_pattern(declared_path: Any) -> tuple[str, bool] | None:
+    if not isinstance(declared_path, str):
+        return None
+    suffix: str | None = None
+    for prefix in ("{run_dir}/", "{run_dir}\\"):
+        if declared_path.startswith(prefix):
+            suffix = declared_path[len(prefix) :].replace("\\", "/")
+            break
+    if suffix is None:
+        return None
+    try:
+        normalized = normalize_bundle_path(suffix, label="bundle artifact declaration")
+    except ConfigError:
+        return None
+    return normalized, not any(character in normalized for character in "*?[")
+
+
+def _artifact_bundle_scope_check(
+    resolved_manifest: Mapping[str, Any],
+    artifacts: Sequence[Mapping[str, Any]],
+) -> dict[str, Any]:
+    bundle_patterns = {
+        (step["id"], declared_path): pattern
+        for step in resolved_manifest.get("run", {}).get("steps", [])
+        for declared_path in step.get("artifacts", [])
+        if (pattern := _bundle_artifact_pattern(declared_path)) is not None
+    }
+    violations: list[dict[str, Any]] = []
+    checked_matches = 0
+    for declaration_index, declaration in enumerate(artifacts):
+        step_id = declaration.get("step_id")
+        declared_path = declaration.get("declared_path")
+        if not isinstance(step_id, str) or not isinstance(declared_path, str):
+            continue
+        key = (step_id, declared_path)
+        pattern = bundle_patterns.get(key)
+        if pattern is None:
+            continue
+        normalized_pattern, exact_path = pattern
+        for match_index, match in enumerate(declaration.get("matches", [])):
+            checked_matches += 1
+            reasons: list[str] = []
+            if match.get("path_scope") != "bundle":
+                reasons.append("bundle declaration recorded as external")
+            elif exact_path and match.get("evidence_path") != normalized_pattern:
+                reasons.append("bundle evidence_path differs from exact declaration")
+            if reasons:
+                violations.append(
+                    {
+                        "declaration_index": declaration_index,
+                        "match_index": match_index,
+                        "step_id": declaration.get("step_id"),
+                        "declared_path": declaration.get("declared_path"),
+                        "evidence_path": match.get("evidence_path"),
+                        "path_scope": match.get("path_scope"),
+                        "reasons": reasons,
+                    }
+                )
+    return {
+        "id": "artifact:bundle-scope-closure",
+        "kind": "integrity",
+        "category": "artifact",
+        "canonical": True,
+        "required": True,
+        "passed": not violations,
+        "bundle_declaration_count": len(bundle_patterns),
+        "checked_match_count": checked_matches,
+        "violations": violations,
+        "scope_authority": "manifest.resolved.yaml+bundle-local records",
+    }
 
 
 def _indexed_reference_check(
@@ -577,6 +831,18 @@ def _schema_one_verification(
             )
         )
 
+    integrity_checks.extend(
+        (
+            _input_declaration_closure_check(resolved_manifest, inputs),
+            _artifact_declaration_closure_check(
+                resolved_manifest,
+                artifacts,
+                dry_run=run.get("dry_run") is True,
+            ),
+            _artifact_bundle_scope_check(resolved_manifest, artifacts),
+        )
+    )
+
     for index_number, item in enumerate(inputs):
         if item.get("path_scope") == "bundle":
             integrity_checks.append(
@@ -640,17 +906,6 @@ def _schema_one_verification(
 
     for declaration_index, declaration in enumerate(artifacts):
         matches = declaration.get("matches", [])
-        integrity_checks.append(
-            {
-                "id": f"closure:artifact:{declaration.get('step_id')}:{declaration_index}",
-                "kind": "integrity",
-                "category": "artifact",
-                "canonical": True,
-                "required": True,
-                "passed": bool(matches),
-                **({"reason": "declared artifact matched no paths"} if not matches else {}),
-            }
-        )
         for match_index, match in enumerate(matches):
             if match.get("path_scope") == "bundle":
                 integrity_checks.append(
@@ -881,6 +1136,7 @@ def _schema_one_verification(
     legacy_checks.extend(_source_policy_checks(source))
     if run.get("dry_run") is not True:
         legacy_checks.extend(_recorded_outcome_checks(commands))
+        legacy_checks.extend(_recorded_artifact_checks(artifacts))
         legacy_checks.extend(expectation_checks)
     status, preflight_passed = _compatibility_status(run, legacy_checks)
     coverage = _schema_one_coverage(

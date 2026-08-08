@@ -22,8 +22,11 @@ untampered snapshot or that any recorded process actually ran.
 
 `bundle_integrity_checked` additionally means every byte used by the verifier is
 inside the bundle's indexed evidence closure and matches its recorded size and
-SHA-256. The evidence root identifies that snapshot; it is not a signature,
-producer identity, trusted timestamp, or authenticity proof.
+SHA-256. For schema-1 bundles, the input IDs and declaration fields and the
+artifact `(step_id, declared_path)` declarations must also correspond exactly
+to `manifest.resolved.yaml`; rewriting records and the index cannot erase a
+manifest declaration. The evidence root identifies that snapshot; it is not a
+signature, producer identity, trusted timestamp, or authenticity proof.
 
 `metric_derivations_recomputed` additionally means at least one declared metric
 was independently re-extracted from indexed bundle-local raw evidence and its
@@ -116,6 +119,18 @@ ordered source set is indexed and passes source metadata and byte-integrity
 checks. `source_files_captured` is the number of files in those successfully
 validated source sets. Metric counts and file counts are therefore never mixed.
 Dry-runs report the manifest total but zero captured sources.
+
+Artifact declaration closure is distinct from artifact discovery. A declaration
+record must exist even when its pattern matched no files, but zero matches is not
+itself a canonical integrity failure. The deprecated compatibility result may
+continue to treat a missing recorded artifact as failure. Artifacts declared
+under `{run_dir}` must remain bundle-scoped; exact non-glob declarations must
+also retain the corresponding safe bundle-relative evidence path. Patterns that
+cannot be classified without consulting producer-origin paths keep conservative
+metadata-only semantics. Dry-run bundles do not claim execution artifacts and
+their producer record remains an empty planning record; declaration-to-record
+closure is therefore marked as planning-deferred and rejects any injected
+artifact records rather than requiring execution-time declaration records.
 
 ## Deprecated compatibility fields
 
