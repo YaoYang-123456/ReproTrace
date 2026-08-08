@@ -432,6 +432,14 @@ def test_windows_post_open_identity_mismatch_fails_before_stream(
     assert evidence.observed_fingerprint is None
 
 
+@pytest.mark.skipif(
+    os.name == "nt",
+    reason=(
+        "Windows os.open sharing prevents renaming an opened regular file; "
+        "post-open identity rejection is covered by the Windows structured "
+        "identity mismatch fixture"
+    ),
+)
 def test_outside_symlink_after_open_fails_before_stream(tmp_path: Path) -> None:
     root, candidate, snapshot, evidence, session = make_owned_evidence(
         tmp_path,
