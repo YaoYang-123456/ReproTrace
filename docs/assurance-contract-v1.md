@@ -45,7 +45,7 @@ Verification schema 1 contains these canonical fields:
 | `assurance_level` | hierarchy above | Which evidence guarantees were actually established |
 | `execution_record_status` | `not_run`, `recorded_success`, `recorded_failure`, `unknown` | What producer-supplied command records claim |
 | `result_status` | `matched`, `not_matched`, `indeterminate`, `not_evaluated` | Outcome of the declared result evaluation |
-| `checks_passed` | boolean | Whether the checks applicable at this stage passed |
+| `checks_passed` | boolean | Whether the canonical contract checks applicable at this stage passed |
 | `coverage` | object | Machine-readable limits of bundle-local evidence coverage |
 | `not_established` | object | Claims explicitly outside the verification guarantee |
 
@@ -53,6 +53,13 @@ These dimensions are intentionally independent. A future schema-1 bundle may
 have complete metric derivation assurance while its declared result is
 `not_matched`. That is an experimental outcome, not an evidence-integrity
 failure.
+
+`contract_checks` contains only checks that determine canonical
+`verification_status` and `checks_passed`. The deprecated `checks` list retains
+the previous mixed source, input, command, artifact, and metric-expectation
+checks for compatibility. A failed recorded command or an unmatched metric may
+therefore make legacy `status`/`passed` fail without making canonical
+verification incomplete.
 
 Invalid bundle/schema/config input raises a configuration error and does not
 produce a misleading verification record. `invalid` remains part of the
@@ -89,14 +96,18 @@ Stage 1 emits machine-readable coverage without claiming evidence closure:
   "coverage": {
     "inputs": {"bundle_local": 0, "external_metadata_only": 2},
     "artifacts": {"bundle_local": 0, "external_metadata_only": 1},
-    "metric_sources": {"captured": 0, "total": 1},
+    "metric_sources": {"captured": 0, "recorded": 0, "total": 1},
     "source": {"replay": "partial"}
   }
 }
 ```
 
-The counts describe current records. They do not upgrade assurance. Later stages
-will derive them from the canonical evidence index and raw metric snapshots.
+`metric_sources.total` is the authoritative declared metric count from
+`manifest.resolved.yaml`; `recorded` is the number of derived records currently
+present in `metrics.json`; and `captured` remains zero until raw metric source
+snapshots are introduced. These counts do not upgrade assurance. Later stages
+will derive bundle-local coverage from the canonical evidence index and raw
+metric snapshots.
 
 ## Deprecated compatibility fields
 
@@ -104,6 +115,9 @@ The fields `status`, `passed`, and `preflight_passed` remain temporarily so old
 callers and tests continue to function. They are deprecated compatibility fields
 and are duplicated under `compatibility` as `legacy_status` and
 `legacy_passed`. They must not determine assurance or result semantics.
+The legacy `checks` list likewise remains separate from canonical
+`contract_checks` and cannot determine `verification_status` or
+`checks_passed`.
 
 During Stage 1 the existing CLI and report still consume these fields. Their
 canonical presentation and exit-code migration is explicitly deferred to Stage
@@ -123,4 +137,3 @@ contract.
 
 Therefore C5 assurance never establishes execution authenticity, independent
 replay, or scientific reproduction.
-

@@ -141,21 +141,24 @@ def verify_bundle(run_dir: str | Path, *, write: bool = True) -> dict[str, Any]:
     commands = _require_record_list(read_json(directory / "commands.json"), "commands.json")
     artifacts = _require_record_list(read_json(directory / "artifacts.json"), "artifacts.json")
     metrics = _require_record_list(read_json(directory / "metrics.json"), "metrics.json")
-    _read_resolved_manifest(directory / "manifest.resolved.yaml")
-    checks: list[dict[str, Any]] = []
+    resolved_manifest = _read_resolved_manifest(directory / "manifest.resolved.yaml")
+    contract_checks: list[dict[str, Any]] = []
+    legacy_checks: list[dict[str, Any]] = []
 
     source_schema = source.get("schema_version", 0)
     if source_schema == 1 and source.get("available") is True:
-        checks.append(
-            _check_source_file(directory, source.get("git_status"), "source:git_status", "Git status evidence")
+        source_status_check = _check_source_file(
+            directory, source.get("git_status"), "source:git_status", "Git status evidence"
         )
-        checks.append(
-            _check_source_file(directory, source.get("git_patch"), "source:git_patch", "Git patch evidence")
+        source_patch_check = _check_source_file(
+            directory, source.get("git_patch"), "source:git_patch", "Git patch evidence"
         )
+        contract_checks.extend((source_status_check, source_patch_check))
+        legacy_checks.extend((source_status_check, source_patch_check))
 
     expected_ref = source.get("expected_ref")
     if expected_ref:
-        checks.append(
+        legacy_checks.append(
             {
                 "id": "source:ref",
                 "category": "source",
@@ -165,7 +168,7 @@ def verify_bundle(run_dir: str | Path, *, write: bool = True) -> dict[str, Any]:
             }
         )
     if source.get("available") and not source.get("allow_dirty", True):
-        checks.append(
+        legacy_checks.append(
             {
                 "id": "source:clean",
                 "category": "source",
@@ -174,14 +177,14 @@ def verify_bundle(run_dir: str | Path, *, write: bool = True) -> dict[str, Any]:
             }
         )
     for item in inputs:
-        checks.append(_check_fingerprint(item, f"input:{item['id']}", "input"))
+        legacy_checks.append(_check_fingerprint(item, f"input:{item['id']}", "input"))
 
     if run.get("dry_run"):
-        preflight_passed = all(check["passed"] for check in checks)
+        preflight_passed = all(check["passed"] for check in legacy_checks)
         status = "planned" if preflight_passed else "preflight_failed"
     else:
         if run.get("evidence_error"):
-            checks.append(
+            legacy_checks.append(
                 {
                     "id": "evidence:collection",
                     "category": "evidence",
@@ -190,7 +193,7 @@ def verify_bundle(run_dir: str | Path, *, write: bool = True) -> dict[str, Any]:
                 }
             )
         for command in commands:
-            checks.append(
+            legacy_checks.append(
                 {
                     "id": f"step:{command.get('step_id')}",
                     "category": "command",
@@ -202,7 +205,7 @@ def verify_bundle(run_dir: str | Path, *, write: bool = True) -> dict[str, Any]:
 
         for declaration_index, declaration in enumerate(artifacts):
             if not declaration.get("matches"):
-                checks.append(
+                legacy_checks.append(
                     {
                         "id": f"artifact:{declaration['step_id']}:{declaration_index}:missing",
                         "category": "artifact",
@@ -211,7 +214,7 @@ def verify_bundle(run_dir: str | Path, *, write: bool = True) -> dict[str, Any]:
                     }
                 )
             for index, record in enumerate(declaration.get("matches", [])):
-                checks.append(
+                legacy_checks.append(
                     _check_fingerprint(
                         record,
                         f"artifact:{declaration['step_id']}:{declaration_index}:{index}",
@@ -228,7 +231,7 @@ def verify_bundle(run_dir: str | Path, *, write: bool = True) -> dict[str, Any]:
                 )
             except (KeyError, TypeError, ValueError):
                 decision = False
-            checks.append(
+            legacy_checks.append(
                 {
                     "id": f"metric:{metric['id']}",
                     "category": "metric",
@@ -239,10 +242,12 @@ def verify_bundle(run_dir: str | Path, *, write: bool = True) -> dict[str, Any]:
                     "rtol": metric.get("rtol"),
                 }
             )
-        status = "passed" if checks and all(check["passed"] for check in checks) else "failed"
+        status = (
+            "passed" if legacy_checks and all(check["passed"] for check in legacy_checks) else "failed"
+        )
 
     compatibility_passed = status == "passed"
-    checks_passed = preflight_passed if run.get("dry_run") else all(check["passed"] for check in checks)
+    checks_passed = all(check["passed"] for check in contract_checks)
     result = {
         "schema_version": 1,
         "run_id": run.get("run_id"),
@@ -254,7 +259,13 @@ def verify_bundle(run_dir: str | Path, *, write: bool = True) -> dict[str, Any]:
         "execution_record_status": str(recorded_execution_status(run, commands)),
         "result_status": str(ResultStatus.NOT_EVALUATED),
         "checks_passed": checks_passed,
-        "coverage": coverage_skeleton(source=source, inputs=inputs, artifacts=artifacts, metrics=metrics),
+        "coverage": coverage_skeleton(
+            source=source,
+            inputs=inputs,
+            artifacts=artifacts,
+            declared_metric_count=len(resolved_manifest.get("metrics", [])),
+            recorded_metric_count=len(metrics),
+        ),
         "not_established": dict(NOT_ESTABLISHED),
         "compatibility": {
             "deprecated_fields": list(DEPRECATED_VERIFICATION_FIELDS),
@@ -264,7 +275,8 @@ def verify_bundle(run_dir: str | Path, *, write: bool = True) -> dict[str, Any]:
         "status": status,
         "passed": compatibility_passed,
         "preflight_passed": preflight_passed if run.get("dry_run") else None,
-        "checks": checks,
+        "contract_checks": contract_checks,
+        "checks": legacy_checks,
     }
     if write:
         write_json(directory / "verification.json", result)

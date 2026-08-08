@@ -95,7 +95,8 @@ def coverage_skeleton(
     source: dict[str, Any],
     inputs: Sequence[dict[str, Any]],
     artifacts: Sequence[dict[str, Any]],
-    metrics: Sequence[dict[str, Any]],
+    declared_metric_count: int,
+    recorded_metric_count: int,
 ) -> dict[str, Any]:
     """Describe Stage-1 coverage without implying bundle-local closure."""
 
@@ -117,7 +118,8 @@ def coverage_skeleton(
         },
         "metric_sources": {
             "captured": 0,
-            "total": len(metrics),
+            "recorded": recorded_metric_count,
+            "total": declared_metric_count,
         },
         "source": {
             "replay": replay,
