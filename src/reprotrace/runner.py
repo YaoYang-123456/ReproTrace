@@ -40,8 +40,7 @@ from .protocol import (
     PROTOCOL_SCHEMA_VERSION,
     command_log_evidence_path,
 )
-from .reporting import generate_report
-from .verifier import verify_bundle
+from .operations import verify_and_report_bundle
 
 
 def _new_run_id() -> str:
@@ -268,9 +267,8 @@ def run_manifest(
                 metric_sources=metric_sources,
             ),
         )
-        verification = verify_bundle(run_dir)
-        generate_report(run_dir, _verification=verification)
-        return run_dir, verification
+        operation = verify_and_report_bundle(run_dir)
+        return run_dir, operation.verification
 
     commands = _execute_commands(manifest, context, run_dir)
     _write_commands(run_dir, commands)
@@ -305,6 +303,5 @@ def run_manifest(
             metric_sources=metric_sources,
         ),
     )
-    verification = verify_bundle(run_dir)
-    generate_report(run_dir, _verification=verification)
-    return run_dir, verification
+    operation = verify_and_report_bundle(run_dir)
+    return run_dir, operation.verification

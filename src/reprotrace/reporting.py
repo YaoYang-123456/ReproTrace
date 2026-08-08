@@ -8,7 +8,7 @@ from pathlib import Path
 from typing import Any
 
 from .errors import ConfigError
-from .io import read_json, read_source_record
+from .io import validate_source_record
 
 
 def _value(value: Any) -> str:
@@ -158,41 +158,24 @@ def _append_check_table(
         )
 
 
-def generate_report(
-    run_dir: str | Path,
-    *,
-    _verification: Mapping[str, Any] | None = None,
-) -> Path:
-    """Generate report.md from a fresh verifier result and bundle-local records.
+def render_report(
+    evidence: Mapping[str, Any],
+    verification: Mapping[str, Any],
+) -> str:
+    """Render a report from already-acquired semantic evidence records."""
 
-    Public calls refresh verification. The private result injection is used only
-    by runner/CLI paths that have just called ``verify_bundle``.
-    """
-
-    directory = Path(run_dir).expanduser().resolve()
-    if _verification is None:
-        from .verifier import verify_bundle
-
-        verification: Mapping[str, Any] = verify_bundle(directory)
-    else:
-        verification = _verification
     if not isinstance(verification, Mapping):
         raise ConfigError("cannot report invalid verification result; expected an object")
-
     names = ["run", "source", "environment", "inputs", "commands", "artifacts", "metrics"]
-    evidence: dict[str, Any] = {}
-    missing = []
-    for name in names:
-        path = directory / f"{name}.json"
-        if not path.is_file():
-            missing.append(path.name)
-        else:
-            evidence[name] = read_source_record(path) if name == "source" else read_json(path)
+    missing = [name for name in names if name not in evidence]
     if missing:
-        raise ConfigError(f"cannot report invalid evidence bundle; missing: {', '.join(missing)}")
+        raise ConfigError(
+            "cannot report invalid evidence records; missing: "
+            + ", ".join(f"{name}.json" for name in missing)
+        )
 
     run = evidence["run"]
-    source = evidence["source"]
+    source = validate_source_record(evidence["source"], label="source.json")
     environment = evidence["environment"]
     if not isinstance(run, dict) or not isinstance(environment, dict):
         raise ConfigError("cannot report invalid run/environment evidence")
@@ -420,6 +403,21 @@ def generate_report(
         )
     lines.append("")
 
-    path = directory / "report.md"
-    path.write_text("\n".join(lines), encoding="utf-8")
-    return path
+    return "\n".join(lines)
+
+
+def generate_report(
+    run_dir: str | Path,
+    *,
+    _verification: Mapping[str, Any] | None = None,
+) -> Path:
+    """Verify and regenerate report.md from one operation-local authority."""
+
+    if _verification is not None:
+        raise ConfigError(
+            "a verification mapping alone cannot authorize report generation; "
+            "use a fresh same-session operation"
+        )
+    from .operations import verify_and_report_bundle
+
+    return verify_and_report_bundle(run_dir).report_path

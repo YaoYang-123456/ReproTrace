@@ -11,10 +11,8 @@ from typing import Sequence
 from . import __version__
 from .diffing import compare_bundles
 from .errors import ConfigError, ReproTraceError
-from .io import read_json
-from .reporting import generate_report
+from .operations import verify_and_report_bundle
 from .runner import run_manifest
-from .verifier import verify_bundle
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -74,11 +72,6 @@ def _print_verification_summary(
     print(f"bundle: {Path(bundle).expanduser().resolve()}")
 
 
-def _is_legacy_bundle(run_dir: str | Path) -> bool:
-    run = read_json(Path(run_dir).expanduser().resolve() / "run.json")
-    return isinstance(run, dict) and run.get("schema_version", 0) == 0
-
-
 def verification_exit_code(
     verification: dict[str, object],
     *,
@@ -120,8 +113,8 @@ def main(argv: Sequence[str] | None = None) -> int:
             _print_verification_summary(verification, run_dir)
             return verification_exit_code(verification, dry_run=args.dry_run)
         if args.command == "verify":
-            verification = verify_bundle(args.run_dir)
-            generate_report(args.run_dir, _verification=verification)
+            operation = verify_and_report_bundle(args.run_dir)
+            verification = operation.verification
             if args.json:
                 print(json.dumps(verification, indent=2, sort_keys=True))
             else:
@@ -129,17 +122,18 @@ def main(argv: Sequence[str] | None = None) -> int:
             return verification_exit_code(
                 verification,
                 dry_run=False,
-                legacy_bundle=_is_legacy_bundle(args.run_dir),
+                legacy_bundle=operation.legacy_bundle,
             )
         if args.command == "report":
-            verification = verify_bundle(args.run_dir)
-            report_path = generate_report(args.run_dir, _verification=verification)
+            operation = verify_and_report_bundle(args.run_dir)
+            verification = operation.verification
+            report_path = operation.report_path
             _print_verification_summary(verification, args.run_dir)
             print(f"report: {report_path}")
             return verification_exit_code(
                 verification,
-                dry_run=verification.get("execution_record_status") == "not_run",
-                legacy_bundle=_is_legacy_bundle(args.run_dir),
+                dry_run=operation.dry_run,
+                legacy_bundle=operation.legacy_bundle,
             )
         if args.command == "diff":
             result = compare_bundles(args.left, args.right)

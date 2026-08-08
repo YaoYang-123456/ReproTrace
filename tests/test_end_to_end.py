@@ -113,10 +113,8 @@ def test_tampered_artifact_fails_verification(tmp_path: Path) -> None:
     run_dir, _ = run_manifest(manifest)
     (run_dir / "artifacts" / "metrics.csv").write_text("score\n999\n", encoding="utf-8")
 
-    verification = verify_bundle(run_dir)
-
-    assert verification["passed"] is False
-    assert any(check["category"] == "artifact" and not check["passed"] for check in verification["checks"])
+    with pytest.raises(ConfigError, match="cannot establish schema-1 evidence snapshot"):
+        verify_bundle(run_dir)
 
 
 def test_dry_run_never_executes_command(tmp_path: Path) -> None:

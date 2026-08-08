@@ -205,20 +205,54 @@ to work after live metric files or the original producer location are deleted,
 replaced, redirected, made unreadable, or relocated, provided the owning
 session remains open.
 
-The legacy path-backed metric APIs remain available and production runner and
-verifier behavior is unchanged. Stage 6.2d provides a separately testable
-snapshot consumer for later integration; it does not itself close production
-verifier TOCTOU/H1.
+The legacy path-backed metric APIs remain available. Stage 6.2d introduced this
+consumer independently; Stage 6.2e now uses it for schema-1 production
+verification while leaving producer-time extraction path-backed.
+
+## Production verification and report session
+
+Stage 6.2e dispatches by attempting `open_schema_one_snapshot()` first. A
+`SchemaOneSnapshotNotApplicable` result alone permits a second, legacy schema-0
+read. A malformed, unstable, incomplete, or fingerprint-mismatched schema-1
+snapshot fails closed and is never retried through the legacy verifier. Thus a
+schema-1 `run.json` is captured once during bootstrap rather than pre-read for
+dispatch and opened again.
+
+`verify_snapshot_session()` accepts one active, complete, sealed session with an
+established evidence root. It obtains all core semantic records only from the
+snapshot parsed cache, applies the existing source, manifest, protocol, closure,
+assurance, and result validations to those values, and projects `bundle:index`
+and `bundle:file:*` checks from expected and handle-observed snapshot
+fingerprints. Source patch/status checks bind their metadata to sealed objects
+with the `source_evidence` role; they do not reopen integrity-only payloads.
+Metric recomputation calls `extract_metrics_from_snapshot()` once when
+derivation is applicable. Dry-run and zero-metric behavior is unchanged.
+
+Report formatting is split into a pure `render_report()` function and an output
+adapter. Schema-1 report records come from the same session cache that produced
+the verification result. CLI `verify`, CLI `report`, and runner finalization use
+one operation-local session for verification, report rendering, and derived
+output writes. A standalone `generate_report()` invocation establishes a fresh
+session; a verification mapping without its active session is not sufficient
+schema-1 report authority. Legacy schema 0 remains path-backed and does not
+require an index or session.
+
+`verification.json` and `report.md` remain derived, regenerable, unindexed
+outputs and do not participate in the evidence-root formula. Immediately before
+each schema-1 derived write, the current named bundle directory is inspected and
+its structured root identity must equal the session-captured identity. An
+unavailable or different identity fails closed without retry or adoption of a
+replacement root. Both outputs use atomic sibling-temporary writes; a report
+failure after a successful verification write does not roll back the already
+completed verification output.
 
 ## Assurance boundary
 
-The eventual invariant is that canonical verification semantics and report
-content consume retained snapshot representations, never reopened live bundle
-paths. Stage 6.2c establishes this invariant inside its separately testable
-builder, and Stage 6.2d preserves it for the independent metric derivation path;
-the production verifier does not consume either path yet. Stages 6.2a-d add no
-assurance level, schema field, evidence-root change, CLI behavior, or report
-behavior.
+For schema 1, canonical production verification semantics and report content now
+consume retained snapshot representations and do not reopen live evidence after
+snapshot establishment. Stage 6.2e changes the internal production authority
+and lifecycle, but adds no assurance level, schema field, evidence-root change,
+command or metric-source schema change, or CLI flag.
 
 The model claims one coherent logical byte snapshot described by one captured
 index. It does not claim a filesystem-atomic whole-directory snapshot or that
@@ -226,7 +260,13 @@ all pathnames physically coexisted at one instant. Producer authenticity,
 trusted execution, signing, attestation, independent replay, and scientific
 reproduction remain not established.
 
-Deferred to separately approved substages are production verifier/report session
-integration and bundle-root identity checks before writing derived outputs.
-Consequently, the production verifier's known TOCTOU issue and H1 remain open
-after Stage 6.2d.
+The root check is not a filesystem transaction and does not claim protection
+against arbitrary high-frequency ABA between the final identity comparison and
+the atomic replace. Component-by-component ancestry locking, native Windows
+share-mode hardening, hostile multi-user filesystem resistance, producer
+authenticity, trusted execution, signing, attestation, replay, and scientific
+reproduction remain outside this stage.
+
+H1 production implementation is candidate-closed by Stage 6.2e. Final closure
+and merge authorization remain deferred to Stage 6.2f adversarial
+cross-platform acceptance.

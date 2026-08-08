@@ -18,6 +18,7 @@ from reprotrace.assurance import (
     recorded_execution_status,
 )
 from reprotrace.runner import run_manifest
+from reprotrace.evidence import read_evidence_index, write_evidence_index
 from reprotrace.errors import ConfigError
 from reprotrace.io import write_json
 from reprotrace.verifier import verify_bundle
@@ -243,6 +244,11 @@ def test_metric_mismatch_only_changes_legacy_compatibility_semantics(tmp_path: P
 def test_metric_coverage_total_comes_from_resolved_manifest(tmp_path: Path) -> None:
     run_dir, _ = run_manifest(make_metric_mismatch_manifest(tmp_path))
     write_json(run_dir / "metrics.json", [])
+    index = read_evidence_index(run_dir)
+    write_evidence_index(
+        run_dir,
+        [{"path": entry["path"], "roles": entry["roles"]} for entry in index["entries"]],
+    )
 
     verification = verify_bundle(run_dir, write=False)
 

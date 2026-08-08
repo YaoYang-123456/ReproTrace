@@ -110,7 +110,7 @@ def test_c2_expectation_miss_is_complete_but_run_exits_one(
     assert "verification: INCOMPLETE" not in output
 
 
-def test_c3_integrity_failure_verify_exit_one_and_root_not_verified(
+def test_c3_snapshot_integrity_failure_verify_exits_two_without_traceback(
     tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
     run_dir, _ = run_manifest(make_manifest(tmp_path / "project"))
@@ -120,11 +120,10 @@ def test_c3_integrity_failure_verify_exit_one_and_root_not_verified(
 
     exit_code = cli_main(["verify", str(run_dir)])
 
-    output = capsys.readouterr().out
-    assert exit_code == 1
-    assert "verification: INCOMPLETE" in output
-    assert "checks: FAIL" in output
-    assert "evidence root: NOT VERIFIED" in output
+    captured = capsys.readouterr()
+    assert exit_code == 2
+    assert "cannot establish schema-1 evidence snapshot" in captured.err
+    assert "Traceback" not in captured.err
 
 
 def test_c3_derivation_failure_exits_one_without_losing_integrity_assurance(
@@ -343,15 +342,11 @@ def test_r6_report_command_refreshes_stale_verification_after_tamper(
 
     exit_code = cli_main(["report", str(run_dir)])
 
-    output = capsys.readouterr().out
+    captured = capsys.readouterr()
     report = report_text(run_dir)
     verification = read_json(run_dir / "verification.json")
-    assert exit_code == 1
-    assert "verification: INCOMPLETE" in output
-    assert verification["verification_status"] == "incomplete"
-    assert verification["evidence_root_sha256"] is None
-    assert "**Verification:** `INCOMPLETE`" in report
-    assert "**Checks:** `FAIL`" in report
-    assert "**Declared result:** `indeterminate`" in report
-    assert "**Evidence root SHA-256:** `NOT VERIFIED`" in report
-    assert "**Declared result:** `matched`" not in report
+    assert exit_code == 2
+    assert "cannot establish schema-1 evidence snapshot" in captured.err
+    assert "Traceback" not in captured.err
+    assert verification["verification_status"] == "complete"
+    assert "**Declared result:** `matched`" in report

@@ -485,19 +485,8 @@ def test_a1_a2_forged_success_or_tampered_command_log_cannot_raise_assurance(
     else:
         log.write_text("tampered\n", encoding="utf-8")
 
-    verification = verify_bundle(run_dir, write=False)
-
-    assert check_by_id(verification, "closure:command-log:produce:stdout")["passed"] is False
-    assert verification["execution_record_status"] == "recorded_success"
-    assert verification["assurance_level"] == "recorded"
-    assert verification["verification_status"] == "incomplete"
-    assert verification["checks_passed"] is False
-    assert verification["evidence_root_sha256"] is None
-    assert verification["not_established"] == {
-        "execution_authenticity": "not_established",
-        "independent_replay": "not_performed",
-        "scientific_reproduction": "not_established",
-    }
+    with pytest.raises(ConfigError, match="cannot establish schema-1 evidence snapshot"):
+        verify_bundle(run_dir, write=False)
 
 
 def test_v6_zero_metric_bundle_has_integrity_assurance(tmp_path: Path) -> None:

@@ -307,6 +307,53 @@ Stage 6.1 assurance/protocol `93 passed`。默认编码与 `python -X utf8=0`
 `fece31236c95ea6fe02959677669bb533bef44b1922c9515a2c7caa361a81b21`。未使用 GPU、
 PEFT-ViT、训练或测试网络依赖。
 
+## C5.0 Stage 6.2e production verifier and report integration
+
+Stage 6.2e 将 schema-1 production verification 接入同一个 sealed
+`VerificationSession`：dispatch 先尝试 snapshot builder，只有明确的
+`SchemaOneSnapshotNotApplicable` 才进入 path-backed schema-0 compatibility path；schema-1
+构建失败一律 fail closed，不回退旧 verifier，也不在 dispatch 前预读 `run.json`。
+
+schema-1 的 run/source/environment/inputs/commands/artifacts/metrics、resolved manifest、
+metric source declarations、index/file integrity projection、closure、metric derivation 与 report
+内容均来自同一个 snapshot。`bundle:file:*` 的 current fingerprint 来自 handle-acquired
+observed state；source patch/status 只核对 indexed sealed object、role 与 fingerprint，不重开
+integrity-only 文件；production metric recomputation 使用
+`extract_metrics_from_snapshot(session)`。现有 assurance、result、compatibility 与 dry-run/
+zero-metric 语义保持不变。
+
+report formatting 已拆为纯 renderer 与输出 adapter。CLI `verify`、CLI `report`、runner executed
+和 runner dry-run finalization 在一次调用中共享同一个 session；standalone `generate_report()`
+会建立一个新的 session。`verification.json` 与 `report.md` 仍为 derived、unindexed、可再生成
+输出，不进入 evidence root。每个 schema-1 派生输出在各自原子写入前都重新比较当前 named
+bundle root 与 session 捕获的 structured identity；identity 不可用或 root 已替换时 fail closed，
+不重试、不采用新 root。
+
+Stage 6.2e 没有改变 schema version、evidence-index schema、evidence-root 公式、command
+protocol、metric_sources schema、assurance/result taxonomy 或 CLI flags。它只声明 same indexed
+logical byte snapshot；高频 ABA、filesystem-atomic directory snapshot、敌对多用户文件系统、
+producer authenticity、trusted execution、签名、attestation、replay 与 scientific reproduction
+均不在范围内。
+
+本地专项测试覆盖 post-snapshot core/metric/index/source mutation、禁止 live semantic read、
+same-session report、root replacement safe-write、cleanup、schema-0 dispatch、single-open bootstrap
+与原始 H1 形状。Stage 6.2e 专项 `37 passed`；Stage 6.2d `37 passed, 1 skipped`；
+Stage 6.2c `28 passed`；Stage 6.2b `17 passed, 4 skipped`；Stage 6.2a `16 passed`；
+Stage 6.1 `93 passed`。默认完整套件与 `python -X utf8=0`（cp1252）完整套件均为
+`338 passed, 9 skipped`；skip 均为既有平台/文件系统能力条件。
+
+真实 tiny executed bundle 为 `.reprotrace/runs/20260808T154710Z-53cb1e`，run、独立 verify、
+report 与再次 report regeneration 均为 `verification_status=complete`、
+`assurance_level=metric_derivations_recomputed`、`result_status=matched`；四次 root 与前后 index
+SHA-256 均为 `2a46a30e764de765224984be39d2326c6483fcd056b7ecd7c114e989984f5fb0`，且 derived
+outputs 未进入 index。真实 tiny dry-run 为 `.reprotrace/runs/20260808T154712Z-2657ad`，保持
+`bundle_integrity_checked`、`not_run`、`not_evaluated`，verify/report 前后 root 均为
+`dfaf610552d0fac0fb9852f39224322e7dc01d028f4f5b540c5f1cf1cee892e0`。
+
+H1 production implementation 在 Stage 6.2e 达到 candidate-closed；最终 closure 与 merge 授权
+仍等待 Stage 6.2f adversarial cross-platform acceptance。跨平台最终结论须等待本提交的 GitHub
+Actions Ubuntu 3.10/3.12、Windows 3.12 与 macOS 3.12 人工 gate。
+
 ## C4 source evidence
 
 C3 验证期间确认：Windows 默认 cp1252 Python 环境在解码包含中文 UTF-8

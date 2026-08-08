@@ -6,7 +6,8 @@ import math
 import os
 import stat
 from collections import Counter
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
@@ -25,14 +26,20 @@ from .assurance import (
 from .closure import evidence_dependency_declarations
 from .evidence import (
     normalize_bundle_path,
-    read_evidence_index,
     resolve_bundle_file,
-    validate_evidence_index,
 )
 from .errors import ConfigError
-from .io import read_json, read_source_record, sha256_file, utc_now, write_json_atomic
+from .derived_outputs import write_session_derived_json
+from .io import (
+    read_json,
+    read_source_record,
+    sha256_file,
+    utc_now,
+    validate_source_record,
+    write_json_atomic,
+)
 from .manifest import redacted_environment, substitute, validate_manifest
-from .metrics import extract_metric_from_evidence, validate_metric_sources_record
+from .metrics import extract_metrics_from_snapshot, validate_metric_sources_record
 from .protocol import (
     COMMAND_STATUSES,
     PROTOCOL_METADATA_KEY,
@@ -41,6 +48,18 @@ from .protocol import (
     command_log_evidence_path,
     join_protocol_path,
     require_protocol_metadata,
+)
+from .snapshot import (
+    EvidenceFingerprint,
+    EvidenceObjectState,
+    SessionState,
+    SnapshotStateError,
+    VerificationSession,
+)
+from .snapshot_builder import (
+    SchemaOneSnapshotNotApplicable,
+    SnapshotBuildError,
+    open_schema_one_snapshot,
 )
 
 
@@ -138,6 +157,58 @@ def _source_file_check(
         "recorded": recorded,
         "current": current,
         "path": metadata.get("path"),
+    }
+
+
+def _snapshot_source_file_check(
+    session: VerificationSession,
+    metadata: Any,
+    check_id: str,
+    label: str,
+) -> dict[str, Any]:
+    if not isinstance(metadata, dict):
+        raise ConfigError(f"invalid source.json; {label} metadata must be an object")
+    path = normalize_bundle_path(metadata.get("path"), label=label)
+    recorded = {key: metadata.get(key) for key in ("size_bytes", "sha256")}
+    evidence = session.snapshot.objects.get(path)
+    if evidence is None:
+        return {
+            "id": check_id,
+            "kind": "integrity",
+            "category": "source",
+            "canonical": True,
+            "required": True,
+            "passed": False,
+            "recorded": recorded,
+            "current": {"exists": False, "size_bytes": None, "sha256": None},
+            "path": path,
+            "reason": f"recorded {label} file is absent from the verified snapshot",
+        }
+    observed = evidence.observed_fingerprint
+    current = {
+        "exists": observed is not None,
+        "size_bytes": None if observed is None else observed.size_bytes,
+        "sha256": None if observed is None else observed.sha256,
+    }
+    expected = evidence.expected_fingerprint
+    passed = (
+        evidence.state is EvidenceObjectState.SEALED
+        and evidence.acquired_and_validated
+        and "source_evidence" in evidence.roles
+        and recorded
+        == {"size_bytes": expected.size_bytes, "sha256": expected.sha256}
+        and observed == expected
+    )
+    return {
+        "id": check_id,
+        "kind": "integrity",
+        "category": "source",
+        "canonical": True,
+        "required": True,
+        "passed": passed,
+        "recorded": recorded,
+        "current": current,
+        "path": path,
     }
 
 
@@ -1111,8 +1182,73 @@ def _schema_one_coverage(
     }
 
 
-def _schema_one_verification(
-    directory: Path,
+def _require_snapshot_session(session: VerificationSession) -> str:
+    if not isinstance(session, VerificationSession):
+        raise TypeError("schema-1 verification requires a VerificationSession")
+    if session.state is not SessionState.OPEN or not session.snapshot.session_active:
+        raise ConfigError("schema-1 verification requires an active verification session")
+    if not session.snapshot.acquisition_complete or not session.snapshot.sealed:
+        raise ConfigError("schema-1 verification requires a complete sealed snapshot")
+    try:
+        return session.snapshot.require_established_evidence_root()
+    except SnapshotStateError as exc:
+        raise ConfigError("schema-1 snapshot evidence root is not established") from exc
+
+
+def _snapshot_index_projection(
+    session: VerificationSession,
+) -> tuple[
+    dict[str, Any],
+    dict[str, dict[str, Any]],
+    dict[str, bool],
+    list[dict[str, Any]],
+    str,
+]:
+    evidence_root = _require_snapshot_session(session)
+    index = session.snapshot.parsed_index
+    index_entries = {entry["path"]: entry for entry in index["entries"]}
+    objects = session.snapshot.objects
+    checks: list[dict[str, Any]] = []
+    validated_paths: dict[str, bool] = {}
+    for entry in index["entries"]:
+        path = entry["path"]
+        evidence = objects.get(path)
+        recorded = {
+            "size_bytes": entry["size_bytes"],
+            "sha256": entry["sha256"],
+        }
+        observed = None if evidence is None else evidence.observed_fingerprint
+        current = {
+            "exists": observed is not None,
+            "size_bytes": None if observed is None else observed.size_bytes,
+            "sha256": None if observed is None else observed.sha256,
+        }
+        expected = EvidenceFingerprint(entry["size_bytes"], entry["sha256"])
+        passed = (
+            evidence is not None
+            and evidence.state is EvidenceObjectState.SEALED
+            and evidence.sealed
+            and evidence.acquired_and_validated
+            and evidence.expected_fingerprint == expected
+            and observed == expected
+            and list(evidence.roles) == entry["roles"]
+        )
+        validated_paths[path] = passed
+        check = {
+            "path": path,
+            "roles": entry["roles"],
+            "passed": passed,
+            "recorded": recorded,
+            "current": current,
+        }
+        if not passed:
+            check["reason"] = "indexed evidence is not sealed and fingerprint-valid"
+        checks.append(check)
+    return index, index_entries, validated_paths, checks, evidence_root
+
+
+def _schema_one_verification_from_records(
+    session: VerificationSession,
     run: dict[str, Any],
     source: dict[str, Any],
     inputs: list[dict[str, Any]],
@@ -1124,12 +1260,9 @@ def _schema_one_verification(
 ) -> dict[str, Any]:
     _validate_schema_one_records(run, inputs, commands, artifacts, metrics)
     metric_sources = validate_metric_sources_record(metric_sources_value)
-    index = read_evidence_index(directory)
-    index_validation = validate_evidence_index(directory, index)
-    index_entries = {entry["path"]: entry for entry in index["entries"]}
-    validated_paths = {
-        check["path"]: check["passed"] for check in index_validation["checks"]
-    }
+    index, index_entries, validated_paths, index_checks, evidence_root = (
+        _snapshot_index_projection(session)
+    )
 
     expected_declarations = evidence_dependency_declarations(
         run=run,
@@ -1151,7 +1284,7 @@ def _schema_one_verification(
             "category": "bundle",
             "canonical": True,
             "required": True,
-            "passed": index_validation["valid"],
+            "passed": all(check["passed"] for check in index_checks),
         },
         {
             "id": "bundle:closure",
@@ -1182,7 +1315,7 @@ def _schema_one_verification(
             "current": check["current"],
             **({"reason": check["reason"]} if "reason" in check else {}),
         }
-        for check in index_validation["checks"]
+        for check in index_checks
     )
 
     if run.get("evidence_error"):
@@ -1201,19 +1334,17 @@ def _schema_one_verification(
     if source.get("schema_version", 0) == 1 and source.get("available") is True:
         integrity_checks.extend(
             (
-                _source_file_check(
-                    directory,
+                _snapshot_source_file_check(
+                    session,
                     source.get("git_status"),
                     "source:git_status",
                     "Git status evidence",
-                    index_entries=index_entries,
                 ),
-                _source_file_check(
-                    directory,
+                _snapshot_source_file_check(
+                    session,
                     source.get("git_patch"),
                     "source:git_patch",
                     "Git patch evidence",
-                    index_entries=index_entries,
                 ),
             )
         )
@@ -1354,6 +1485,15 @@ def _schema_one_verification(
         and str(execution_status) == "recorded_success"
     )
     if derivation_applicable:
+        recomputed_by_id: dict[str, dict[str, Any]] = {}
+        snapshot_extraction_error: str | None = None
+        try:
+            recomputed_records = extract_metrics_from_snapshot(session)
+            recomputed_by_id = {
+                record["id"]: record for record in recomputed_records
+            }
+        except (ConfigError, SnapshotStateError) as exc:
+            snapshot_extraction_error = str(exc)
         id_check = {
             "id": "metric:id-closure",
             "kind": "derivation",
@@ -1380,28 +1520,18 @@ def _schema_one_verification(
             metric_id = specification["id"]
             source_record = sources_by_id.get(metric_id)
             recorded = recorded_by_id.get(metric_id)
-            recomputed: dict[str, Any] | None = None
-            extraction_error: str | None = None
-            evidence_paths: list[Path] = []
+            recomputed = recomputed_by_id.get(metric_id)
+            extraction_error = snapshot_extraction_error
             evidence_path_values: list[str] = []
             if source_record is None or recorded is None or metric_id in duplicate_recorded_ids:
                 extraction_error = "metric source or derived record is missing or duplicated"
+                recomputed = None
             else:
                 evidence_path_values = [
                     source_item["evidence_path"] for source_item in source_record["sources"]
                 ]
-                try:
-                    evidence_paths = [
-                        resolve_bundle_file(
-                            directory,
-                            evidence_path,
-                            label=f"metric {metric_id} source evidence",
-                        )
-                        for evidence_path in evidence_path_values
-                    ]
-                    recomputed = extract_metric_from_evidence(specification, evidence_paths)
-                except ConfigError as exc:
-                    extraction_error = str(exc)
+                if recomputed is None and extraction_error is None:
+                    extraction_error = "snapshot metric derivation did not return this metric"
 
             source_integrity = (
                 metric_id in captured_metric_ids
@@ -1517,7 +1647,7 @@ def _schema_one_verification(
         "result_status": str(result_status),
         "checks_passed": checks_passed,
         "evidence_root_sha256": (
-            index_validation["evidence_root_sha256"] if integrity_passed else None
+            evidence_root if integrity_passed else None
         ),
         "coverage": coverage,
         "not_established": dict(NOT_ESTABLISHED),
@@ -1534,8 +1664,103 @@ def _schema_one_verification(
     }
 
 
-def verify_bundle(run_dir: str | Path, *, write: bool = True) -> dict[str, Any]:
-    directory = Path(run_dir).expanduser().resolve()
+SNAPSHOT_REPORT_RECORDS = {
+    "run": "run.json",
+    "source": "source.json",
+    "environment": "environment.json",
+    "inputs": "inputs.json",
+    "commands": "commands.json",
+    "artifacts": "artifacts.json",
+    "metrics": "metrics.json",
+}
+
+
+@dataclass(slots=True)
+class _VerifyBundleTestHooks:
+    after_snapshot_open: Callable[[VerificationSession], None] | None = None
+    before_verification_write: (
+        Callable[[VerificationSession, Mapping[str, Any]], None] | None
+    ) = None
+
+
+def _open_schema_one_snapshot_for_production(
+    directory: Path,
+) -> VerificationSession | None:
+    try:
+        return open_schema_one_snapshot(directory)
+    except SchemaOneSnapshotNotApplicable:
+        return None
+    except SnapshotBuildError as exc:
+        raise ConfigError(f"cannot establish schema-1 evidence snapshot: {exc}") from exc
+
+
+def snapshot_report_records(session: VerificationSession) -> dict[str, Any]:
+    """Return report inputs from one active schema-1 snapshot cache."""
+
+    _require_snapshot_session(session)
+    try:
+        return {
+            name: session.snapshot.parsed_record(path)
+            for name, path in SNAPSHOT_REPORT_RECORDS.items()
+        }
+    except SnapshotStateError as exc:
+        raise ConfigError(f"cannot access snapshot report records: {exc}") from exc
+
+
+def verify_snapshot_session(session: VerificationSession) -> dict[str, Any]:
+    """Verify one active, complete schema-1 session without live evidence reads."""
+
+    _require_snapshot_session(session)
+    try:
+        run = _require_record_object(
+            session.snapshot.parsed_record("run.json"), "run.json"
+        )
+        if run.get("schema_version") != 1:
+            raise ConfigError("snapshot-backed verification requires run schema 1")
+        source = validate_source_record(
+            session.snapshot.parsed_record("source.json"),
+            label="source.json",
+        )
+        _require_record_object(
+            session.snapshot.parsed_record("environment.json"),
+            "environment.json",
+        )
+        inputs = _require_record_list(
+            session.snapshot.parsed_record("inputs.json"), "inputs.json"
+        )
+        commands = _require_record_list(
+            session.snapshot.parsed_record("commands.json"), "commands.json"
+        )
+        artifacts = _require_record_list(
+            session.snapshot.parsed_record("artifacts.json"), "artifacts.json"
+        )
+        metrics = _require_record_list(
+            session.snapshot.parsed_record("metrics.json"), "metrics.json"
+        )
+        resolved_manifest = _require_record_object(
+            session.snapshot.parsed_record("manifest.resolved.yaml"),
+            "manifest.resolved.yaml",
+        )
+        validate_manifest(resolved_manifest)
+        metric_sources = session.snapshot.parsed_record("metric_sources.json")
+    except SnapshotStateError as exc:
+        raise ConfigError(f"cannot access schema-1 snapshot records: {exc}") from exc
+    return _schema_one_verification_from_records(
+        session,
+        run,
+        source,
+        inputs,
+        commands,
+        artifacts,
+        metrics,
+        resolved_manifest,
+        metric_sources,
+    )
+
+
+def _load_legacy_bundle(
+    directory: Path,
+) -> tuple[dict[str, Any], dict[str, Any]]:
     common_required = [
         "run.json",
         "source.json",
@@ -1563,74 +1788,87 @@ def verify_bundle(run_dir: str | Path, *, write: bool = True) -> dict[str, Any]:
     run_schema = run.get("schema_version", 0)
     if isinstance(run_schema, bool) or not isinstance(run_schema, int) or run_schema not in (0, 1):
         raise ConfigError(f"unsupported run.json schema_version: {run_schema!r}")
-    if run_schema == 1:
-        schema_one_required = ["commands.jsonl", "metric_sources.json", "evidence.index.json"]
-        schema_one_paths = {
-            name: resolve_bundle_file(
-                directory,
-                name,
-                label=f"{name} evidence",
-                allow_missing=True,
-            )
-            for name in schema_one_required
-        }
-        missing = [name for name, path in schema_one_paths.items() if not path.exists()]
-        if missing:
-            raise ConfigError(f"invalid evidence bundle {directory}; missing: {', '.join(missing)}")
-        run = _require_record_object(
-            read_json(common_paths["run.json"], strict=True), "run.json"
-        )
-
-    strict_json = run_schema == 1
-    source = read_source_record(
-        common_paths["source.json"], strict_json=strict_json
-    )
-    _require_record_object(
-        read_json(common_paths["environment.json"], strict=strict_json),
-        "environment.json",
+    if run_schema != 0:
+        raise ConfigError("schema-1 bundle cannot use the legacy verification path")
+    source = read_source_record(common_paths["source.json"])
+    environment = _require_record_object(
+        read_json(common_paths["environment.json"]), "environment.json"
     )
     inputs = _require_record_list(
-        read_json(common_paths["inputs.json"], strict=strict_json), "inputs.json"
+        read_json(common_paths["inputs.json"]), "inputs.json"
     )
     commands = _require_record_list(
-        read_json(common_paths["commands.json"], strict=strict_json),
-        "commands.json",
+        read_json(common_paths["commands.json"]), "commands.json"
     )
     artifacts = _require_record_list(
-        read_json(common_paths["artifacts.json"], strict=strict_json),
-        "artifacts.json",
+        read_json(common_paths["artifacts.json"]), "artifacts.json"
     )
     metrics = _require_record_list(
-        read_json(common_paths["metrics.json"], strict=strict_json), "metrics.json"
+        read_json(common_paths["metrics.json"]), "metrics.json"
     )
     resolved_manifest = _read_resolved_manifest(common_paths["manifest.resolved.yaml"])
+    return (
+        {
+            "run": run,
+            "source": source,
+            "environment": environment,
+            "inputs": inputs,
+            "commands": commands,
+            "artifacts": artifacts,
+            "metrics": metrics,
+        },
+        resolved_manifest,
+    )
 
-    if run_schema == 0:
-        result = _legacy_verification(
-            directory,
-            run,
-            source,
-            inputs,
-            commands,
-            artifacts,
-            metrics,
-            resolved_manifest,
-        )
-    else:
-        metric_sources = read_json(
-            schema_one_paths["metric_sources.json"], strict=True
-        )
-        result = _schema_one_verification(
-            directory,
-            run,
-            source,
-            inputs,
-            commands,
-            artifacts,
-            metrics,
-            resolved_manifest,
-            metric_sources,
-        )
-    if write:
-        write_json_atomic(directory / "verification.json", result)
-    return result
+
+def _verify_legacy_directory(
+    directory: Path,
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    evidence, resolved_manifest = _load_legacy_bundle(directory)
+    result = _legacy_verification(
+        directory,
+        evidence["run"],
+        evidence["source"],
+        evidence["inputs"],
+        evidence["commands"],
+        evidence["artifacts"],
+        evidence["metrics"],
+        resolved_manifest,
+    )
+    return result, evidence
+
+
+def _verify_bundle_with_hooks(
+    run_dir: str | Path,
+    *,
+    write: bool = True,
+    _hooks: _VerifyBundleTestHooks | None = None,
+) -> dict[str, Any]:
+    directory = Path(run_dir).expanduser().absolute()
+    hooks = _hooks or _VerifyBundleTestHooks()
+    session = _open_schema_one_snapshot_for_production(directory)
+    if session is None:
+        result, _ = _verify_legacy_directory(directory)
+        if write:
+            write_json_atomic(directory / "verification.json", result)
+        return result
+    try:
+        if hooks.after_snapshot_open is not None:
+            hooks.after_snapshot_open(session)
+        result = verify_snapshot_session(session)
+        if write:
+            if hooks.before_verification_write is not None:
+                hooks.before_verification_write(session, result)
+            write_session_derived_json(
+                session,
+                directory,
+                "verification.json",
+                result,
+            )
+        return result
+    finally:
+        session.close()
+
+
+def verify_bundle(run_dir: str | Path, *, write: bool = True) -> dict[str, Any]:
+    return _verify_bundle_with_hooks(run_dir, write=write)
