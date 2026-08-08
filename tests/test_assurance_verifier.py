@@ -145,6 +145,46 @@ def test_v1_normal_schema_one_bundle_recomputes_metric(tmp_path: Path) -> None:
     assert "report.md" not in entries
 
 
+def test_posix_absolute_output_root_preserves_command_protocol_closure(
+    tmp_path: Path,
+) -> None:
+    run_dir, _ = run_manifest(make_manifest(tmp_path / "project"))
+    run = read_json(run_dir / "run.json")
+    posix_output_root = "/tmp/project/.evidence"
+    expected_run_dir = f"{posix_output_root}/{run['run_id']}"
+
+    resolved_path = run_dir / "manifest.resolved.yaml"
+    resolved = yaml.safe_load(resolved_path.read_text(encoding="utf-8"))
+    resolved["run"]["output_root"] = posix_output_root
+    metadata = resolved["_reprotrace"]
+    metadata["runtime_context"]["run_dir"] = expected_run_dir
+    metadata["commands"][0]["environment_overrides"][
+        "REPROTRACE_RUN_DIR"
+    ] = expected_run_dir
+    resolved_path.write_text(
+        yaml.safe_dump(resolved, sort_keys=False),
+        encoding="utf-8",
+    )
+
+    commands = read_json(run_dir / "commands.json")
+    commands[0]["environment_overrides"]["REPROTRACE_RUN_DIR"] = expected_run_dir
+    write_json(run_dir / "commands.json", commands)
+    (run_dir / "commands.jsonl").write_text(
+        "".join(json.dumps(command, sort_keys=True) + "\n" for command in commands),
+        encoding="utf-8",
+    )
+    refresh_index(run_dir)
+
+    verification = verify_bundle(run_dir, write=False)
+    protocol = check_by_id(verification, "command:protocol-closure")
+
+    assert join_protocol_path(posix_output_root, run["run_id"]) == expected_run_dir
+    assert metadata["runtime_context"]["run_dir"] == expected_run_dir
+    assert protocol["passed"] is True
+    assert protocol["authority_errors"] == []
+    assert protocol["field_mismatches"] == []
+
+
 def test_v2_expectation_miss_does_not_reduce_assurance(tmp_path: Path) -> None:
     _, verification = run_manifest(make_manifest(tmp_path / "project", expected=4.0))
 

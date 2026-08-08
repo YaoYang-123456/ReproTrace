@@ -6,7 +6,7 @@ import fnmatch
 import ntpath
 import posixpath
 from functools import lru_cache
-from pathlib import PurePosixPath, PureWindowsPath
+from pathlib import PurePosixPath
 from typing import Any
 
 from .errors import ConfigError
@@ -33,8 +33,11 @@ def command_log_evidence_path(step_id: str, stream: str) -> str:
 def join_protocol_path(root: str, child: str) -> str:
     """Join producer path strings without consulting the verifier filesystem."""
 
-    windows = PureWindowsPath(root)
-    module = ntpath if windows.drive or windows.root else posixpath
+    has_windows_drive = (
+        len(root) >= 2 and root[0].isalpha() and root[1] == ":"
+    )
+    uses_windows_separators = root.startswith("\\")
+    module = ntpath if has_windows_drive or uses_windows_separators else posixpath
     return module.normpath(module.join(root, child))
 
 
