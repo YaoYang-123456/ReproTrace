@@ -1,0 +1,206 @@
+# Verification assurance contract v1
+
+This document defines the canonical verification vocabulary introduced in C5.
+It is deliberately narrower than execution attestation or scientific
+reproduction.
+
+## Assurance hierarchy
+
+The ordered levels are:
+
+```text
+recorded
+    ↓
+bundle_integrity_checked
+    ↓
+metric_derivations_recomputed
+```
+
+`recorded` means the required bundle records are present, parseable, structurally
+valid, and use supported schemas. It does not establish that their bytes are an
+untampered snapshot or that any recorded process actually ran.
+
+`bundle_integrity_checked` additionally means every byte used by the verifier is
+inside the bundle's indexed evidence closure and matches its recorded size and
+SHA-256. For schema-1 bundles, the input IDs and declaration fields and the
+artifact `(step_id, declared_path)` declarations must also correspond exactly
+to `manifest.resolved.yaml`; rewriting records and the index cannot erase a
+manifest declaration. The evidence root identifies that snapshot; it is not a
+signature, producer identity, trusted timestamp, or authenticity proof.
+
+`metric_derivations_recomputed` additionally means at least one declared metric
+was independently re-extracted from indexed bundle-local raw evidence and its
+stored derivation and declared tolerance decision were checked against the
+resolved manifest. A valid zero-metric experiment stops at
+`bundle_integrity_checked` without failing verification.
+
+Stage 1 defines this hierarchy and conservatively assigns schema-0 bundles only
+`recorded`. Stage 2 adds canonical evidence-index primitives, Stage 3 adds raw
+metric evidence, and Stage 4 connects both to new run schema 1. A schema-1 run
+reaches only the highest level supported by checks that actually completed.
+
+## Orthogonal canonical fields
+
+Verification schema 1 contains these canonical fields:
+
+| Field | Values | Meaning |
+|---|---|---|
+| `verification_status` | `complete`, `incomplete`, `invalid` | Whether the applicable verification contract completed |
+| `assurance_level` | hierarchy above | Which evidence guarantees were actually established |
+| `execution_record_status` | `not_run`, `recorded_success`, `recorded_failure`, `unknown` | What producer-supplied command records claim |
+| `result_status` | `matched`, `not_matched`, `indeterminate`, `not_evaluated` | Outcome of the declared result evaluation |
+| `checks_passed` | boolean | Whether the canonical contract checks applicable at this stage passed |
+| `coverage` | object | Machine-readable limits of bundle-local evidence coverage |
+| `not_established` | object | Claims explicitly outside the verification guarantee |
+
+These dimensions are intentionally independent. A future schema-1 bundle may
+have complete metric derivation assurance while its declared result is
+`not_matched`. That is an experimental outcome, not an evidence-integrity
+failure.
+
+`contract_checks` contains only checks that determine canonical
+`verification_status` and `checks_passed`. The deprecated `checks` list retains
+the previous mixed source, input, command, artifact, and metric-expectation
+checks for compatibility. A failed recorded command or an unmatched metric may
+therefore make legacy `status`/`passed` fail without making canonical
+verification incomplete.
+
+Invalid bundle/schema/config input raises a configuration error and does not
+produce a misleading verification record. `invalid` remains part of the
+canonical status vocabulary for API/CLI presentation in the later exposure
+stage.
+
+## Execution record semantics
+
+Execution record values always include the word `recorded` where appropriate:
+
+- `not_run`: dry-run; no execution is claimed;
+- `recorded_success`: command records claim successful completion;
+- `recorded_failure`: command records claim failure, timeout, or launch error;
+- `unknown`: no sufficient command record is available.
+
+No value establishes that a real process ran. Every verification record carries:
+
+```json
+{
+  "not_established": {
+    "execution_authenticity": "not_established",
+    "independent_replay": "not_performed",
+    "scientific_reproduction": "not_established"
+  }
+}
+```
+
+For schema-1, `commands.json` is the sole semantic command authority. Its
+immutable fields are checked against the ordered, producer-finalized protocol in
+`manifest.resolved.yaml`, including requested/resolved argv, cwd, environment
+overrides, timeout, and fixed stdout/stderr evidence paths. Successful execution
+requires the full manifest sequence; a failed execution may retain only the
+valid prefix ending in one failed/timeout/launch-error record. Status,
+return-code, and `run.status` combinations follow the state machine in the v0
+design. `false` is never accepted as exit code zero.
+
+`commands.jsonl` is an indexed archive/convenience export. Its bytes receive
+ordinary index integrity protection, but it is not parsed or compared as a
+second semantic command record and carries the `command_archive` role rather
+than `command_record`.
+
+Schema-1 bundles created before this protocol metadata existed remain readable,
+but missing authority is a failed canonical closure check and cannot retain
+bundle-integrity assurance. They are not silently upgraded from the older
+command contract.
+
+## Coverage
+
+Legacy schema-0 verification retains the conservative Stage-1 coverage shape.
+Schema-1 verification reports validated bundle-local coverage:
+
+```json
+{
+  "coverage": {
+    "inputs": {"bundle_local": 0, "external_metadata_only": 2, "total": 2},
+    "artifacts": {"bundle_local": 1, "external_metadata_only": 0, "total": 1},
+    "metric_sources": {
+      "captured": 1,
+      "recorded": 1,
+      "source_files_captured": 2,
+      "total": 1
+    },
+    "source": {"replay": "partial"}
+  }
+}
+```
+
+`metric_sources.total` is the authoritative declared metric count from
+`manifest.resolved.yaml`; `recorded` is the number of derived records present in
+`metrics.json`; `captured` is the number of declared metrics whose complete
+ordered source set is indexed and passes source metadata and byte-integrity
+checks. `source_files_captured` is the number of files in those successfully
+validated source sets. Metric counts and file counts are therefore never mixed.
+Dry-runs report the manifest total but zero captured sources.
+
+Artifact declaration closure is distinct from artifact discovery. A declaration
+record must exist even when its pattern matched no files, but zero matches is not
+itself a canonical integrity failure. The deprecated compatibility result may
+continue to treat a missing recorded artifact as failure. Artifacts declared
+under `{run_dir}` must remain bundle-scoped; exact non-glob declarations must
+also retain the corresponding safe bundle-relative evidence path. Patterns that
+cannot be classified without consulting producer-origin paths keep conservative
+metadata-only semantics. Dry-run bundles do not claim execution artifacts and
+their producer record remains an empty planning record; declaration-to-record
+closure is therefore marked as planning-deferred and rejects any injected
+artifact records rather than requiring execution-time declaration records.
+
+## Deprecated compatibility fields
+
+The fields `status`, `passed`, and `preflight_passed` remain temporarily so old
+callers and tests continue to function. They are deprecated compatibility fields
+and are duplicated under `compatibility` as `legacy_status` and
+`legacy_passed`. They must not determine assurance or result semantics.
+The legacy `checks` list likewise remains separate from canonical
+`contract_checks` and cannot determine `verification_status` or
+`checks_passed`.
+
+Stage 5 CLI and report presentation uses canonical fields as the primary user
+conclusion. Deprecated fields remain available in JSON and a clearly labeled
+compatibility section, but they are not a source for schema-1 assurance or report
+headlines. Schema-0 CLI exits may retain the legacy compatibility policy without
+promoting the canonical `recorded`/`not_evaluated` result.
+
+Legacy bundle schema 0 never exceeds `recorded`, and its canonical
+`result_status` is `not_evaluated`, even if a historical compatibility field says
+`passed=true`.
+
+## Expected limitation
+
+An attacker who rewrites the manifest, logs, raw metric sources, derived records,
+and evidence index into a new internally consistent bundle may still satisfy the
+highest C5 assurance level. Detecting that producer-level forgery requires trust,
+signing, attestation, or an independent replay system and is outside this
+contract.
+
+Therefore C5 assurance never establishes execution authenticity, independent
+replay, or scientific reproduction.
+
+Stage 6.1 also does not establish an immutable verifier-time snapshot. Hashing,
+opening, and parsing are not bound to one filesystem object across the complete
+verification operation; that TOCTOU problem is reserved for separate work.
+
+The executable A1–A7 threat cases and the coherent-forgery boundary fixture are
+mapped in [the C5 adversarial acceptance matrix](adversarial-acceptance.md).
+
+## Presentation and exit policy
+
+Human CLI and report output must display verification completeness, canonical
+checks, assurance, recorded execution, and declared result independently. A
+complete `metric_derivations_recomputed` bundle may legitimately have
+`result_status=not_matched`; this is not a verification failure. CLI exit `1`
+still communicates that the requested declared result was not met.
+
+Schema-1 run/verify/report exits are derived from canonical checks, recorded
+execution status, and result status rather than deprecated `passed`. Dry-run
+continues to use preflight compatibility semantics because source-policy
+preflight is intentionally part of that established workflow. Reports are
+regenerated from a fresh verifier result and bind their displayed evidence root
+to that result. A null root is displayed as `NOT VERIFIED`, never as a valid
+digest.

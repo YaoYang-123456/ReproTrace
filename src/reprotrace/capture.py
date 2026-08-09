@@ -13,8 +13,10 @@ from pathlib import Path
 from typing import Any, Mapping
 
 from .errors import ConfigError
+from .evidence import normalize_bundle_path, resolve_bundle_file
 from .io import fingerprint, sha256_bytes
 from .manifest import LoadedManifest, substitute
+from .protocol import bundle_artifact_path_matches, bundle_artifact_pattern
 
 
 @dataclass(frozen=True)
@@ -373,6 +375,8 @@ def capture_inputs(manifest: LoadedManifest, context: Mapping[str, Any]) -> list
             "input_kind": item.get("kind", "unspecified"),
             "required": bool(item.get("required", True)),
             **fingerprint(path),
+            "path_scope": "external",
+            "evidence_path": None,
         }
         records.append(record)
         if record["required"] and not record["exists"]:
@@ -382,18 +386,64 @@ def capture_inputs(manifest: LoadedManifest, context: Mapping[str, Any]) -> list
     return records
 
 
-def capture_artifacts(manifest: LoadedManifest, context: Mapping[str, Any]) -> list[dict[str, Any]]:
+def _scope_fingerprint(record: dict[str, Any], bundle_root: Path) -> dict[str, Any]:
+    """Classify a fingerprint without dereferencing it during later verification."""
+
+    scoped = dict(record)
+    scoped.update(path_scope="external", evidence_path=None)
+    if record.get("exists") is not True or record.get("kind") != "file":
+        return scoped
+    root = bundle_root.expanduser().resolve(strict=True)
+    candidate = Path(record["path"]).expanduser().resolve(strict=True)
+    try:
+        relative = candidate.relative_to(root).as_posix()
+    except ValueError:
+        return scoped
+    evidence_path = normalize_bundle_path(relative, label="artifact evidence")
+    resolve_bundle_file(root, evidence_path, label="artifact evidence")
+    scoped.update(path_scope="bundle", evidence_path=evidence_path)
+    return scoped
+
+
+def capture_artifacts(
+    manifest: LoadedManifest,
+    context: Mapping[str, Any],
+    bundle_root: Path,
+) -> list[dict[str, Any]]:
     declarations: list[dict[str, Any]] = []
     for step in manifest.data["run"]["steps"]:
         for pattern in step.get("artifacts", []):
             resolved_pattern = _resolve_path(pattern, manifest.project_root, context)
             matches = sorted(Path(match) for match in glob.glob(str(resolved_pattern), recursive=True))
+            scoped_matches = [
+                _scope_fingerprint(fingerprint(path), bundle_root) for path in matches
+            ]
+            canonical_pattern = bundle_artifact_pattern(pattern)
+            if canonical_pattern is not None:
+                seen_evidence_paths: set[str] = set()
+                for match in scoped_matches:
+                    if match.get("path_scope") != "bundle":
+                        continue
+                    evidence_path = match.get("evidence_path")
+                    if not bundle_artifact_path_matches(
+                        canonical_pattern, evidence_path
+                    ):
+                        raise ConfigError(
+                            f"captured artifact {evidence_path!r} does not match "
+                            f"bundle declaration {pattern!r}"
+                        )
+                    if evidence_path in seen_evidence_paths:
+                        raise ConfigError(
+                            f"duplicate bundle artifact evidence path for {pattern!r}: "
+                            f"{evidence_path}"
+                        )
+                    seen_evidence_paths.add(evidence_path)
             declarations.append(
                 {
                     "step_id": step["id"],
                     "declared_path": pattern,
                     "resolved_pattern": str(resolved_pattern),
-                    "matches": [fingerprint(path) for path in matches],
+                    "matches": scoped_matches,
                 }
             )
     return declarations

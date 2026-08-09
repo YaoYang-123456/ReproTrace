@@ -13,6 +13,7 @@ import reprotrace.runner as runner_module
 from reprotrace.capture import GitResult, SourceCapture, capture_source
 from reprotrace.cli import main as cli_main
 from reprotrace.diffing import compare_bundles
+from reprotrace.evidence import read_evidence_index, write_evidence_index
 from reprotrace.errors import ConfigError
 from reprotrace.io import read_json, sha256_bytes, write_json
 from reprotrace.manifest import LoadedManifest, load_manifest
@@ -81,6 +82,14 @@ def make_bundle(tmp_path: Path, *, dirty: bool = False) -> tuple[Path, Path, Pat
     manifest = make_manifest(tmp_path, project)
     run_dir, _ = run_manifest(manifest, dry_run=True, project_root=project)
     return project, manifest, run_dir
+
+
+def refresh_index(run_dir: Path) -> None:
+    index = read_evidence_index(run_dir)
+    write_evidence_index(
+        run_dir,
+        [{"path": entry["path"], "roles": entry["roles"]} for entry in index["entries"]],
+    )
 
 
 def direct_patch(project: Path, record: dict[str, object]) -> bytes:
@@ -386,21 +395,16 @@ def test_tampered_source_evidence_fails_verification(tmp_path: Path, filename: s
     _, _, run_dir = make_bundle(tmp_path, dirty=True)
     (run_dir / filename).write_bytes(b"tampered")
 
-    result = verify_bundle(run_dir, write=False)
-
-    check_id = "source:git_patch" if filename.endswith("patch") else "source:git_status"
-    assert next(check for check in result["checks"] if check["id"] == check_id)["passed"] is False
+    with pytest.raises(ConfigError, match="cannot establish schema-1 evidence snapshot"):
+        verify_bundle(run_dir, write=False)
 
 
 def test_missing_source_evidence_fails_verification(tmp_path: Path) -> None:
     _, _, run_dir = make_bundle(tmp_path, dirty=True)
     (run_dir / "source.patch").unlink()
 
-    result = verify_bundle(run_dir, write=False)
-
-    check = next(check for check in result["checks"] if check["id"] == "source:git_patch")
-    assert check["passed"] is False
-    assert check["reason"] == "recorded Git patch evidence file is missing"
+    with pytest.raises(ConfigError, match="cannot establish schema-1 evidence snapshot"):
+        verify_bundle(run_dir, write=False)
 
 
 @pytest.mark.parametrize("unsafe", ["../outside.patch", "/absolute.patch", "C:\\outside.patch", "C:outside.patch", "\\\\server\\share\\patch"])
@@ -409,6 +413,7 @@ def test_source_evidence_rejects_unsafe_paths(tmp_path: Path, unsafe: str) -> No
     source = read_json(run_dir / "source.json")
     source["git_patch"]["path"] = unsafe
     write_json(run_dir / "source.json", source)
+    refresh_index(run_dir)
 
     with pytest.raises(ConfigError, match="invalid Git patch evidence path"):
         verify_bundle(run_dir, write=False)
@@ -426,9 +431,12 @@ def test_source_evidence_rejects_symlink_escape(tmp_path: Path) -> None:
     source = read_json(run_dir / "source.json")
     source["git_patch"]["path"] = link.name
     write_json(run_dir / "source.json", source)
+    refresh_index(run_dir)
 
-    with pytest.raises(ConfigError, match="path escapes the evidence bundle"):
-        verify_bundle(run_dir, write=False)
+    result = verify_bundle(run_dir, write=False)
+    check = next(check for check in result["checks"] if check["id"] == "source:git_patch")
+    assert check["passed"] is False
+    assert "absent from the verified snapshot" in check["reason"]
 
 
 def test_source_evidence_rejects_parent_link_escape(tmp_path: Path) -> None:
@@ -444,9 +452,12 @@ def test_source_evidence_rejects_parent_link_escape(tmp_path: Path) -> None:
     source = read_json(run_dir / "source.json")
     source["git_patch"]["path"] = "linked-directory/source.patch"
     write_json(run_dir / "source.json", source)
+    refresh_index(run_dir)
 
-    with pytest.raises(ConfigError, match="path escapes the evidence bundle"):
-        verify_bundle(run_dir, write=False)
+    result = verify_bundle(run_dir, write=False)
+    check = next(check for check in result["checks"] if check["id"] == "source:git_patch")
+    assert check["passed"] is False
+    assert "absent from the verified snapshot" in check["reason"]
 
 
 @pytest.mark.skipif(os.name != "nt", reason="Windows junction behavior")
@@ -468,8 +479,11 @@ def test_source_evidence_rejects_junction_escape(tmp_path: Path) -> None:
         source = read_json(run_dir / "source.json")
         source["git_patch"]["path"] = "junction/source.patch"
         write_json(run_dir / "source.json", source)
-        with pytest.raises(ConfigError, match="path escapes the evidence bundle"):
-            verify_bundle(run_dir, write=False)
+        refresh_index(run_dir)
+        result = verify_bundle(run_dir, write=False)
+        check = next(check for check in result["checks"] if check["id"] == "source:git_patch")
+        assert check["passed"] is False
+        assert "absent from the verified snapshot" in check["reason"]
     finally:
         os.rmdir(junction)
 
@@ -479,9 +493,12 @@ def test_source_evidence_requires_regular_files(tmp_path: Path) -> None:
     source = read_json(run_dir / "source.json")
     source["git_patch"]["path"] = "artifacts"
     write_json(run_dir / "source.json", source)
+    refresh_index(run_dir)
 
-    with pytest.raises(ConfigError, match="expected a regular file"):
-        verify_bundle(run_dir, write=False)
+    result = verify_bundle(run_dir, write=False)
+    check = next(check for check in result["checks"] if check["id"] == "source:git_patch")
+    assert check["passed"] is False
+    assert "absent from the verified snapshot" in check["reason"]
 
 
 def test_source_json_is_not_written_after_binary_write_failure(
@@ -510,6 +527,9 @@ def test_source_json_is_not_written_after_binary_write_failure(
 
 def test_legacy_source_bundle_remains_readable(tmp_path: Path) -> None:
     _, _, run_dir = make_bundle(tmp_path)
+    run = read_json(run_dir / "run.json")
+    run["schema_version"] = 0
+    write_json(run_dir / "run.json", run)
     source = read_json(run_dir / "source.json")
     legacy = {
         key: source.get(key)
@@ -558,6 +578,7 @@ def test_source_record_validation_is_consistent_across_consumers(
         source[field] = None
         damaged = source
     write_json(source_path, damaged)
+    refresh_index(run_dir)
 
     with pytest.raises(ConfigError, match="source.json"):
         if consumer == "verify":
@@ -574,13 +595,15 @@ def test_malformed_source_record_cli_error_has_no_traceback(
 ) -> None:
     _, _, run_dir = make_bundle(tmp_path)
     write_json(run_dir / "source.json", [])
+    refresh_index(run_dir)
     argv = [consumer, str(run_dir), str(run_dir)] if consumer == "diff" else [consumer, str(run_dir)]
 
     exit_code = cli_main(argv)
 
     captured = capsys.readouterr()
     assert exit_code == 2
-    assert "reprotrace: invalid source.json" in captured.err
+    assert "reprotrace:" in captured.err
+    assert "source.json" in captured.err
     assert "Traceback" not in captured.err
 
 

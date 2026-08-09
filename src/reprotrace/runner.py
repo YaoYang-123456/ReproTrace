@@ -28,9 +28,19 @@ from .manifest import (
     runtime_context,
     substitute,
 )
-from .metrics import extract_metrics
-from .reporting import generate_report
-from .verifier import verify_bundle
+from .metrics import (
+    capture_metric_sources,
+    empty_metric_sources_record,
+    extract_metrics_from_evidence,
+)
+from .closure import evidence_dependency_declarations
+from .evidence import write_evidence_index
+from .protocol import (
+    PROTOCOL_METADATA_KEY,
+    PROTOCOL_SCHEMA_VERSION,
+    command_log_evidence_path,
+)
+from .operations import verify_and_report_bundle
 
 
 def _new_run_id() -> str:
@@ -68,7 +78,52 @@ def _write_commands(run_dir: Path, commands: list[dict[str, Any]]) -> None:
     write_json(run_dir / "commands.json", commands)
     with (run_dir / "commands.jsonl").open("w", encoding="utf-8") as handle:
         for command in commands:
-            handle.write(json.dumps(command, sort_keys=True) + "\n")
+            handle.write(json.dumps(command, sort_keys=True, allow_nan=False) + "\n")
+
+
+def _command_protocol_record(
+    manifest: LoadedManifest,
+    step: dict[str, Any],
+    context: dict[str, Any],
+    run_dir: Path,
+) -> dict[str, Any]:
+    argv, cwd, overrides = _resolved_command(manifest, step, context, run_dir)
+    return {
+        "step_id": step["id"],
+        "requested_argv": step["argv"],
+        "declared_cwd": step.get("cwd", str(manifest.project_root)),
+        "declared_environment": redacted_environment(step.get("env", {})),
+        "argv": argv,
+        "cwd": str(cwd),
+        "environment_overrides": redacted_environment(overrides),
+        "timeout_seconds": step.get("timeout_seconds"),
+        "stdout_evidence_path": command_log_evidence_path(step["id"], "stdout"),
+        "stderr_evidence_path": command_log_evidence_path(step["id"], "stderr"),
+    }
+
+
+def _resolved_manifest_evidence(
+    manifest: LoadedManifest,
+    context: dict[str, Any],
+    run_dir: Path,
+) -> dict[str, Any]:
+    record = redacted_manifest(manifest.data)
+    record[PROTOCOL_METADATA_KEY] = {
+        "schema_version": PROTOCOL_SCHEMA_VERSION,
+        "command_authority": "commands.json",
+        "command_archive": "commands.jsonl",
+        "runtime_context": {
+            "python": str(context["python"]),
+            "project_root": str(context["project_root"]),
+            "run_dir": str(context["run_dir"]),
+            "seed": context["seed"],
+        },
+        "commands": [
+            _command_protocol_record(manifest, step, context, run_dir)
+            for step in manifest.data["run"]["steps"]
+        ],
+    }
+    return record
 
 
 def _planned_commands(
@@ -76,16 +131,11 @@ def _planned_commands(
 ) -> list[dict[str, Any]]:
     commands = []
     for step in manifest.data["run"]["steps"]:
-        argv, cwd, overrides = _resolved_command(manifest, step, context, run_dir)
+        protocol = _command_protocol_record(manifest, step, context, run_dir)
         commands.append(
             {
-                "step_id": step["id"],
+                **protocol,
                 "status": "planned",
-                "requested_argv": step["argv"],
-                "argv": argv,
-                "cwd": str(cwd),
-                "environment_overrides": redacted_environment(overrides),
-                "timeout_seconds": step.get("timeout_seconds"),
                 "stdout_path": str(run_dir / "logs" / f"{step['id']}.stdout.log"),
                 "stderr_path": str(run_dir / "logs" / f"{step['id']}.stderr.log"),
             }
@@ -143,6 +193,8 @@ def _execute_commands(
             "error": error,
             "stdout_path": str(stdout_path),
             "stderr_path": str(stderr_path),
+            "stdout_evidence_path": command_log_evidence_path(step["id"], "stdout"),
+            "stderr_evidence_path": command_log_evidence_path(step["id"], "stderr"),
         }
         commands.append(record)
         if status != "completed":
@@ -173,7 +225,7 @@ def run_manifest(
             write_bytes_atomic(run_dir / relative_path, source_capture.files[relative_path])
     write_json_atomic(run_dir / "source.json", source_capture.record)
     run_record: dict[str, Any] = {
-        "schema_version": 0,
+        "schema_version": 1,
         "run_id": run_id,
         "project_name": manifest.data["project"]["name"],
         "claim": manifest.data.get("claim", {}),
@@ -186,28 +238,52 @@ def run_manifest(
         "finished_at": None,
     }
     write_json(run_dir / "run.json", run_record)
-    write_yaml(run_dir / "manifest.resolved.yaml", redacted_manifest(manifest.data))
+    write_yaml(
+        run_dir / "manifest.resolved.yaml",
+        _resolved_manifest_evidence(manifest, context, run_dir),
+    )
     write_json(run_dir / "environment.json", capture_environment())
     write_json(run_dir / "inputs.json", inputs)
+    metric_sources = empty_metric_sources_record()
+    write_json(run_dir / "metric_sources.json", metric_sources)
 
     if dry_run:
         commands = _planned_commands(manifest, context, run_dir)
         _write_commands(run_dir, commands)
-        write_json(run_dir / "artifacts.json", [])
-        write_json(run_dir / "metrics.json", [])
+        artifacts: list[dict[str, Any]] = []
+        metrics: list[dict[str, Any]] = []
+        write_json(run_dir / "artifacts.json", artifacts)
+        write_json(run_dir / "metrics.json", metrics)
         run_record.update(status="planned", finished_at=utc_now())
         write_json(run_dir / "run.json", run_record)
-        verification = verify_bundle(run_dir)
-        generate_report(run_dir)
-        return run_dir, verification
+        write_evidence_index(
+            run_dir,
+            evidence_dependency_declarations(
+                run=run_record,
+                source=source_capture.record,
+                inputs=inputs,
+                commands=commands,
+                artifacts=artifacts,
+                metric_sources=metric_sources,
+            ),
+        )
+        operation = verify_and_report_bundle(run_dir)
+        return run_dir, operation.verification
 
     commands = _execute_commands(manifest, context, run_dir)
     _write_commands(run_dir, commands)
-    write_json(run_dir / "artifacts.json", capture_artifacts(manifest, context))
+    artifacts = capture_artifacts(manifest, context, run_dir)
+    write_json(run_dir / "artifacts.json", artifacts)
     metrics: list[dict[str, Any]] = []
     if commands and all(item["status"] == "completed" for item in commands):
         try:
-            metrics = extract_metrics(manifest, context)
+            metric_sources = capture_metric_sources(manifest, context, run_dir)
+            write_json_atomic(run_dir / "metric_sources.json", metric_sources)
+            metrics = extract_metrics_from_evidence(
+                manifest.data.get("metrics", []),
+                run_dir,
+                metric_sources,
+            )
         except ConfigError as exc:
             run_record["evidence_error"] = str(exc)
     write_json(run_dir / "metrics.json", metrics)
@@ -216,6 +292,16 @@ def run_manifest(
         finished_at=utc_now(),
     )
     write_json(run_dir / "run.json", run_record)
-    verification = verify_bundle(run_dir)
-    generate_report(run_dir)
-    return run_dir, verification
+    write_evidence_index(
+        run_dir,
+        evidence_dependency_declarations(
+            run=run_record,
+            source=source_capture.record,
+            inputs=inputs,
+            commands=commands,
+            artifacts=artifacts,
+            metric_sources=metric_sources,
+        ),
+    )
+    operation = verify_and_report_bundle(run_dir)
+    return run_dir, operation.verification

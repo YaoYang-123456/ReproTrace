@@ -23,7 +23,13 @@ def utc_now() -> str:
 
 def write_json(path: Path, value: Any) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(value, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    try:
+        encoded = json.dumps(value, indent=2, sort_keys=True, allow_nan=False) + "\n"
+    except (TypeError, ValueError) as exc:
+        from .errors import ConfigError
+
+        raise ConfigError(f"cannot serialize strict JSON evidence {path}: {exc}") from exc
+    path.write_text(encoded, encoding="utf-8")
 
 
 def write_bytes_atomic(path: Path, value: bytes) -> None:
@@ -47,39 +53,56 @@ def write_bytes_atomic(path: Path, value: bytes) -> None:
 
 
 def write_json_atomic(path: Path, value: Any) -> None:
-    encoded = (json.dumps(value, indent=2, sort_keys=True) + "\n").encode("utf-8")
+    try:
+        encoded = (
+            json.dumps(value, indent=2, sort_keys=True, allow_nan=False) + "\n"
+        ).encode("utf-8")
+    except (TypeError, ValueError) as exc:
+        from .errors import ConfigError
+
+        raise ConfigError(f"cannot serialize strict JSON evidence {path}: {exc}") from exc
     write_bytes_atomic(path, encoded)
 
 
-def read_json(path: Path) -> Any:
+def read_json(path: Path, *, strict: bool = False) -> Any:
+    def reject_non_finite(token: str) -> None:
+        raise ValueError(f"non-finite JSON number is not allowed: {token}")
+
     try:
-        return json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError) as exc:
+        return json.loads(
+            path.read_text(encoding="utf-8"),
+            **({"parse_constant": reject_non_finite} if strict else {}),
+        )
+    except (OSError, ValueError) as exc:
         from .errors import ConfigError
 
         raise ConfigError(f"cannot read JSON evidence {path}: {exc}") from exc
 
 
-def read_source_record(path: Path) -> dict[str, Any]:
-    """Read and minimally validate a legacy or schema-1 source record."""
+def validate_source_record(
+    value: Any,
+    *,
+    label: str = "source.json",
+) -> dict[str, Any]:
+    """Minimally validate a parsed legacy or schema-1 source record."""
 
     from .errors import ConfigError
 
-    source = read_json(path)
+    source = value
     if not isinstance(source, dict):
-        raise ConfigError(f"invalid source.json {path}; root must be an object")
+        raise ConfigError(f"invalid {label}; root must be an object")
 
     schema = source.get("schema_version", 0)
     if isinstance(schema, bool) or not isinstance(schema, int) or schema not in (0, 1):
-        raise ConfigError(f"unsupported source.json schema_version: {schema!r}")
+        raise ConfigError(f"unsupported {label} schema_version: {schema!r}")
 
     available = source.get("available")
     if not isinstance(available, bool):
-        raise ConfigError(f"invalid source.json {path}; available must be boolean")
+        raise ConfigError(f"invalid {label}; available must be boolean")
     if "dirty" in source and not isinstance(source["dirty"], bool):
-        raise ConfigError(f"invalid source.json {path}; dirty must be boolean")
+        raise ConfigError(f"invalid {label}; dirty must be boolean")
     if "diff_sha256" in source and source["diff_sha256"] is not None and not isinstance(source["diff_sha256"], str):
-        raise ConfigError(f"invalid source.json {path}; diff_sha256 must be a string or null")
+        raise ConfigError(f"invalid {label}; diff_sha256 must be a string or null")
 
     if schema == 0:
         return source
@@ -87,52 +110,61 @@ def read_source_record(path: Path) -> dict[str, Any]:
     object_fields = ("summary", "coverage", "git", "git_status", "git_patch")
     for field in object_fields:
         if not isinstance(source.get(field), dict):
-            raise ConfigError(f"invalid source.json {path}; {field} must be an object")
+            raise ConfigError(f"invalid {label}; {field} must be an object")
 
     if available:
         for field in ("commit", "worktree_root"):
             if not isinstance(source.get(field), str) or not source[field]:
-                raise ConfigError(f"invalid source.json {path}; {field} must be a non-empty string")
+                raise ConfigError(f"invalid {label}; {field} must be a non-empty string")
         if not isinstance(source.get("dirty"), bool):
-            raise ConfigError(f"invalid source.json {path}; dirty must be boolean")
+            raise ConfigError(f"invalid {label}; dirty must be boolean")
 
         summary = source["summary"]
         if not isinstance(summary.get("tracked_changes"), bool):
-            raise ConfigError(f"invalid source.json {path}; summary.tracked_changes must be boolean")
+            raise ConfigError(f"invalid {label}; summary.tracked_changes must be boolean")
         untracked_count = summary.get("untracked_file_count")
         if isinstance(untracked_count, bool) or not isinstance(untracked_count, int) or untracked_count < 0:
             raise ConfigError(
-                f"invalid source.json {path}; summary.untracked_file_count must be a non-negative integer"
+                f"invalid {label}; summary.untracked_file_count must be a non-negative integer"
             )
 
         coverage = source["coverage"]
         if not isinstance(coverage.get("replay"), str) or not coverage["replay"]:
-            raise ConfigError(f"invalid source.json {path}; coverage.replay must be a non-empty string")
+            raise ConfigError(f"invalid {label}; coverage.replay must be a non-empty string")
 
         git_metadata = source["git"]
         if not isinstance(git_metadata.get("version"), str) or not git_metadata["version"]:
-            raise ConfigError(f"invalid source.json {path}; git.version must be a non-empty string")
+            raise ConfigError(f"invalid {label}; git.version must be a non-empty string")
 
         for field in ("git_status", "git_patch"):
             metadata = source[field]
             if not isinstance(metadata.get("path"), str) or not metadata["path"]:
-                raise ConfigError(f"invalid source.json {path}; {field}.path must be a non-empty string")
+                raise ConfigError(f"invalid {label}; {field}.path must be a non-empty string")
             size = metadata.get("size_bytes")
             if isinstance(size, bool) or not isinstance(size, int) or size < 0:
-                raise ConfigError(f"invalid source.json {path}; {field}.size_bytes must be a non-negative integer")
+                raise ConfigError(f"invalid {label}; {field}.size_bytes must be a non-negative integer")
             sha256 = metadata.get("sha256")
             if not isinstance(sha256, str) or len(sha256) != 64:
-                raise ConfigError(f"invalid source.json {path}; {field}.sha256 must be a SHA-256 hex string")
+                raise ConfigError(f"invalid {label}; {field}.sha256 must be a SHA-256 hex string")
             try:
                 int(sha256, 16)
             except ValueError as exc:
-                raise ConfigError(f"invalid source.json {path}; {field}.sha256 must be a SHA-256 hex string") from exc
+                raise ConfigError(f"invalid {label}; {field}.sha256 must be a SHA-256 hex string") from exc
     else:
         reason = source.get("reason")
         if not isinstance(reason, str) or not reason:
-            raise ConfigError(f"invalid source.json {path}; unavailable source requires a non-empty reason")
+            raise ConfigError(f"invalid {label}; unavailable source requires a non-empty reason")
 
     return source
+
+
+def read_source_record(path: Path, *, strict_json: bool = False) -> dict[str, Any]:
+    """Read and minimally validate a legacy or schema-1 source record."""
+
+    return validate_source_record(
+        read_json(path, strict=strict_json),
+        label=f"source.json {path}",
+    )
 
 
 def write_yaml(path: Path, value: Any) -> None:

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import copy
+import math
 import re
 import sys
 from dataclasses import dataclass
@@ -31,6 +32,15 @@ class LoadedManifest:
 def _require(condition: bool, message: str) -> None:
     if not condition:
         raise ConfigError(message)
+
+
+def _is_finite_number(value: Any) -> bool:
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return False
+    try:
+        return math.isfinite(float(value))
+    except (OverflowError, ValueError):
+        return False
 
 
 def load_manifest(path: str | Path, project_root: str | Path | None = None) -> LoadedManifest:
@@ -87,7 +97,10 @@ def validate_manifest(data: Mapping[str, Any]) -> None:
             f"{prefix}.argv must be a non-empty list of strings",
         )
         timeout = step.get("timeout_seconds")
-        _require(timeout is None or (isinstance(timeout, (int, float)) and timeout > 0), f"{prefix}.timeout_seconds must be positive")
+        _require(
+            timeout is None or (_is_finite_number(timeout) and timeout > 0),
+            f"{prefix}.timeout_seconds must be a finite positive number",
+        )
         env = step.get("env", {})
         _require(isinstance(env, dict) and all(isinstance(k, str) and isinstance(v, str) for k, v in env.items()), f"{prefix}.env must map strings to strings")
         artifacts = step.get("artifacts", [])
@@ -121,14 +134,19 @@ def validate_manifest(data: Mapping[str, Any]) -> None:
         _require(metric.get("extractor") in SUPPORTED_EXTRACTORS, f"{prefix}.extractor must be csv or log_regex")
         _require(isinstance(metric.get("path"), str) and metric["path"], f"{prefix}.path is required")
         _require(metric.get("select", "last") in SUPPORTED_SELECTORS, f"{prefix}.select must be last, max, or min")
-        _require(isinstance(metric.get("expected"), (int, float)), f"{prefix}.expected must be numeric")
         _require(
-            isinstance(metric.get("atol", 0.0), (int, float)) and metric.get("atol", 0.0) >= 0,
-            f"{prefix}.atol must be non-negative",
+            _is_finite_number(metric.get("expected")),
+            f"{prefix}.expected must be a finite number",
         )
         _require(
-            isinstance(metric.get("rtol", 0.0), (int, float)) and metric.get("rtol", 0.0) >= 0,
-            f"{prefix}.rtol must be non-negative",
+            _is_finite_number(metric.get("atol", 0.0))
+            and metric.get("atol", 0.0) >= 0,
+            f"{prefix}.atol must be finite and non-negative",
+        )
+        _require(
+            _is_finite_number(metric.get("rtol", 0.0))
+            and metric.get("rtol", 0.0) >= 0,
+            f"{prefix}.rtol must be finite and non-negative",
         )
         if metric["extractor"] == "csv":
             _require(isinstance(metric.get("column"), str), f"{prefix}.column is required for csv")

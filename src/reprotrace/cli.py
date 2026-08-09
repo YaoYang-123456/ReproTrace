@@ -11,9 +11,8 @@ from typing import Sequence
 from . import __version__
 from .diffing import compare_bundles
 from .errors import ConfigError, ReproTraceError
-from .reporting import generate_report
+from .operations import verify_and_report_bundle
 from .runner import run_manifest
-from .verifier import verify_bundle
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -40,6 +39,67 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
+def _contract_display(value: object) -> str:
+    return str(value).replace("_", " ").upper()
+
+
+def _print_verification_summary(
+    verification: dict[str, object],
+    bundle: str | Path,
+) -> None:
+    not_established = verification.get("not_established", {})
+    if not isinstance(not_established, dict):
+        not_established = {}
+    evidence_root = verification.get("evidence_root_sha256")
+    print(f"verification: {_contract_display(verification.get('verification_status'))}")
+    print(f"checks: {'PASS' if verification.get('checks_passed') is True else 'FAIL'}")
+    print(f"assurance: {verification.get('assurance_level')}")
+    print(f"recorded execution: {verification.get('execution_record_status')}")
+    print(f"declared result: {verification.get('result_status')}")
+    print(
+        "execution authenticity: "
+        f"{_contract_display(not_established.get('execution_authenticity', 'not_established'))}"
+    )
+    print(
+        "independent replay: "
+        f"{_contract_display(not_established.get('independent_replay', 'not_performed'))}"
+    )
+    print(
+        "scientific reproduction: "
+        f"{_contract_display(not_established.get('scientific_reproduction', 'not_established'))}"
+    )
+    print(f"evidence root: {evidence_root if evidence_root else 'NOT VERIFIED'}")
+    print(f"bundle: {Path(bundle).expanduser().resolve()}")
+
+
+def verification_exit_code(
+    verification: dict[str, object],
+    *,
+    dry_run: bool,
+    legacy_bundle: bool = False,
+) -> int:
+    """Map verified semantics to a CLI result without treating `passed` as canonical."""
+
+    if dry_run:
+        return 0 if verification.get("preflight_passed") is True else 1
+    if (
+        verification.get("verification_status") != "complete"
+        or verification.get("checks_passed") is not True
+    ):
+        return 1
+    if legacy_bundle:
+        compatibility = verification.get("compatibility")
+        return (
+            0
+            if isinstance(compatibility, dict)
+            and compatibility.get("legacy_passed") is True
+            else 1
+        )
+    if verification.get("execution_record_status") != "recorded_success":
+        return 1
+    return 0 if verification.get("result_status") in {"matched", "not_evaluated"} else 1
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
     try:
@@ -50,21 +110,31 @@ def main(argv: Sequence[str] | None = None) -> int:
                 seed=args.seed,
                 project_root=args.project_root,
             )
-            print(run_dir)
-            if args.dry_run:
-                return 0 if verification["preflight_passed"] else 1
-            return 0 if verification["passed"] else 1
+            _print_verification_summary(verification, run_dir)
+            return verification_exit_code(verification, dry_run=args.dry_run)
         if args.command == "verify":
-            verification = verify_bundle(args.run_dir)
-            generate_report(args.run_dir)
+            operation = verify_and_report_bundle(args.run_dir)
+            verification = operation.verification
             if args.json:
                 print(json.dumps(verification, indent=2, sort_keys=True))
             else:
-                print(f"{verification['status']}: {Path(args.run_dir).resolve()}")
-            return 0 if verification["passed"] else 1
+                _print_verification_summary(verification, args.run_dir)
+            return verification_exit_code(
+                verification,
+                dry_run=False,
+                legacy_bundle=operation.legacy_bundle,
+            )
         if args.command == "report":
-            print(generate_report(args.run_dir))
-            return 0
+            operation = verify_and_report_bundle(args.run_dir)
+            verification = operation.verification
+            report_path = operation.report_path
+            _print_verification_summary(verification, args.run_dir)
+            print(f"report: {report_path}")
+            return verification_exit_code(
+                verification,
+                dry_run=operation.dry_run,
+                legacy_bundle=operation.legacy_bundle,
+            )
         if args.command == "diff":
             result = compare_bundles(args.left, args.right)
             print(json.dumps(result, indent=2, sort_keys=True))
