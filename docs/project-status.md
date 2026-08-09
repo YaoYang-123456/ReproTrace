@@ -97,7 +97,8 @@ Stage 5 将 Stage 1–4 的现有语义呈现到 CLI 与 `report.md`，不新增
   tolerance 与结果，不运行第二套 extraction；
 - report 明确展示 coverage、metadata-only 边界，以及 execution authenticity、independent replay、
   scientific reproduction 均未建立；
-- `reprotrace report` 在写报告前重新运行 `verify_bundle()`，tamper 后不会沿用 stale 成功结论；
+- Stage 5 当时只保证 `reprotrace report` 在写报告前重新运行 verifier；若该刷新失败，
+  历史派生文件仍可能留存。该生命周期缺口随后由 C5.1a 处理；
 - legacy schema 0 顶部固定保守呈现 `assurance=recorded`、`result=not_evaluated`，旧
   `status/passed/preflight_passed` 只在 compatibility 区保留。
 
@@ -413,6 +414,34 @@ semantic closure。它不建立 malicious producer authenticity、trusted execut
 attestation、filesystem-atomic whole-directory snapshot、任意高频 ABA 防护、hostile multi-user
 filesystem security、native Windows `CreateFileW` ancestry/share locking、independent replay 或
 scientific reproduction。
+
+## C5.1a stale derived-output lifecycle
+
+C5.1a 仅关闭失败的 write-intending re-verification 可能留下历史成功派生输出的问题。每次
+serialized write-intending refresh 在 schema dispatch 前捕获 bundle root identity，并按固定顺序
+guard-invalidates `verification.json`、`report.md`。`verification.json` 是 primary canonical
+derived record；`report.md` 是同次 refresh 的 dependent presentation。schema-1 publication 还必须
+与 session root identity 完全一致；schema 0 使用相同 mutation guard，但 assurance 仍封顶为
+`recorded`、result 仍为 `not_evaluated`，且不产生 evidence root。
+
+成功 invalidation 后的早期失败会留下两个输出均 absent；verification 成功写入但 report 写入失败时，
+保留 fresh verification、report absent。没有 current canonical verification 的 orphan report 只能视为
+historical，文件存在本身不能证明最近一次 invocation 成功。`verify_bundle(write=False)` 不取得 mutation
+authority，在成功和失败路径都不修改两个派生输出。派生输出继续不进入 evidence index，也不改变
+evidence root 或 assurance semantics。
+
+该一致性语义只适用于同一 bundle 上 serialized 的 write-intending invocation；C5.1a 没有新增 lock、
+quarantine、sidecar、schema bump、两文件 transaction、directory fsync、任意高频 ABA 防护、hostile
+filesystem 安全、native Windows ancestry/share locking、签名、attestation、replay 或 authenticity
+保证。
+
+实现基线为 `main@8746a00257528fce2d90faac07923f1c45e0bf6b`，工作分支为
+`codex/c5.1a-derived-output-lifecycle`。2026-08-08 本地 Windows 验证结果：lifecycle 专项
+`23 passed, 2 skipped`；verifier/report/CLI/schema-0 相关回归 `106 passed`；H1/H2/H3 final
+adversarial suite `52 passed, 1 skipped`；默认编码完整套件与 `python -X utf8=0`
+（`encoding=cp1252`）完整套件均为 `413 passed, 12 skipped`。C5.1a 的两个 skip 是 POSIX-only
+final-symlink 与 FIFO 语义；Windows junction/reparse 与 opened-file sharing failure 均实际执行。
+其余 skip 均为既有的跨平台 capability 条件。未运行训练、GPU 或 PEFT-ViT。
 
 ## C4 source evidence
 

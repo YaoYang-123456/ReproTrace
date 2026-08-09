@@ -238,13 +238,31 @@ schema-1 report authority. Legacy schema 0 remains path-backed and does not
 require an index or session.
 
 `verification.json` and `report.md` remain derived, regenerable, unindexed
-outputs and do not participate in the evidence-root formula. Immediately before
-each schema-1 derived write, the current named bundle directory is inspected and
-its structured root identity must equal the session-captured identity. An
-unavailable or different identity fails closed without retry or adoption of a
-replacement root. Both outputs use atomic sibling-temporary writes; a report
-failure after a successful verification write does not roll back the already
-completed verification output.
+outputs and do not participate in the evidence-root formula. For each serialized
+write-intending invocation, C5.1a captures the named bundle-root identity and
+guard-invalidates historical `verification.json` followed by historical
+`report.md` before schema dispatch or snapshot establishment. The first file is
+the primary canonical derived record; the report is dependent presentation from
+the same refresh. A final symlink is unlinked without following its target;
+directories, junctions/reparse-like objects, and unsupported special objects
+fail closed.
+
+The lifecycle identity is checked before and after mutation. For schema 1 it
+must also exactly match the session-captured root identity before publication,
+and the existing session-bound writers retain their per-write root checks.
+Schema 0 uses the same mutation guard without gaining snapshot assurance.
+`verify_bundle(write=False)` acquires no lifecycle mutation authority and leaves
+both canonical files unchanged on success or failure.
+
+After successful invalidation, a snapshot, verification, rendering, or
+verification-publication failure leaves both outputs absent. Report publication
+failure after successful verification publication leaves fresh verification and
+no report; there is no rollback. A report surviving without current canonical
+verification is historical/orphaned output, not a current report, and file
+existence alone does not prove that the latest invocation succeeded. The writes
+remain atomic sibling-temporary single-file writes, not a two-file transaction.
+Concurrent write-intending operations on the same bundle are outside the pair
+consistency guarantee and must be serialized externally.
 
 ## Assurance boundary
 

@@ -7,8 +7,14 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from .derived_outputs import write_session_derived_bytes, write_session_derived_json
-from .io import write_bytes_atomic, write_json_atomic
+from .derived_outputs import (
+    _DerivedOutputLifecycleTestHooks,
+    begin_derived_output_refresh,
+    write_guarded_derived_bytes,
+    write_guarded_derived_json,
+    write_session_derived_bytes,
+    write_session_derived_json,
+)
 from .reporting import render_report
 from .snapshot import VerificationSession
 from .verifier import (
@@ -29,6 +35,7 @@ class BundleReportResult:
 
 @dataclass(slots=True)
 class _VerifyReportTestHooks:
+    lifecycle: _DerivedOutputLifecycleTestHooks | None = None
     after_snapshot_open: Callable[[VerificationSession], None] | None = None
     after_verification_before_report: (
         Callable[[VerificationSession, Mapping[str, Any]], None] | None
@@ -50,13 +57,18 @@ def verify_and_report_bundle(
 
     directory = Path(run_dir).expanduser().absolute()
     hooks = _hooks or _VerifyReportTestHooks()
+    lifecycle = begin_derived_output_refresh(directory, _hooks=hooks.lifecycle)
     session = _open_schema_one_snapshot_for_production(directory)
     if session is None:
+        lifecycle.require_current_root()
         verification, evidence = _verify_legacy_directory(directory)
         report_text = render_report(evidence, verification)
-        write_json_atomic(directory / "verification.json", verification)
-        report_path = directory / "report.md"
-        write_bytes_atomic(report_path, report_text.encode("utf-8"))
+        write_guarded_derived_json(lifecycle, "verification.json", verification)
+        report_path = write_guarded_derived_bytes(
+            lifecycle,
+            "report.md",
+            report_text.encode("utf-8"),
+        )
         return BundleReportResult(
             verification=verification,
             report_path=report_path,
@@ -65,6 +77,7 @@ def verify_and_report_bundle(
         )
 
     try:
+        lifecycle.require_session_identity(session)
         if hooks.after_snapshot_open is not None:
             hooks.after_snapshot_open(session)
         verification = verify_snapshot_session(session)
