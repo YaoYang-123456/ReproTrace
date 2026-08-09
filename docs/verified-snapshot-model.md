@@ -238,13 +238,42 @@ schema-1 report authority. Legacy schema 0 remains path-backed and does not
 require an index or session.
 
 `verification.json` and `report.md` remain derived, regenerable, unindexed
-outputs and do not participate in the evidence-root formula. Immediately before
-each schema-1 derived write, the current named bundle directory is inspected and
-its structured root identity must equal the session-captured identity. An
-unavailable or different identity fails closed without retry or adoption of a
-replacement root. Both outputs use atomic sibling-temporary writes; a report
-failure after a successful verification write does not roll back the already
-completed verification output.
+outputs and do not participate in the evidence-root formula. For each serialized
+write-intending invocation, C5.1a captures the named bundle-root identity and
+guard-invalidates historical `verification.json` followed by historical
+`report.md` before schema dispatch or snapshot establishment. The first file is
+the primary canonical derived record; the report is dependent presentation from
+the same refresh. A final symlink is unlinked without following its target;
+directories, junctions/reparse-like objects, and unsupported special objects
+fail closed.
+
+The lifecycle first captures the named operation-start root identity, then opens
+and identity-checks a mutation authority for that same root. POSIX retains a
+directory descriptor and performs canonical inspection, unlink, exclusive
+sibling-temporary creation, atomic replacement, and cleanup relative to it.
+Windows retains a directory handle opened without delete sharing; this prevents
+the selected lifecycle root from being renamed or replaced while equivalent
+child operations use the protected resolved root path. The authority remains
+open through the final publication and is released on every exit path.
+
+Named-root checks still run at lifecycle boundaries and before and after
+publication. They determine whether the invocation can continue or be reported
+as current, while the retained authority determines which root is physically
+mutated. For schema 1, the authority identity must also exactly match the
+session-captured root identity. Schema 0 uses the same mutation authority without
+gaining snapshot assurance. `verify_bundle(write=False)` acquires no lifecycle
+mutation authority and leaves both canonical files unchanged on success or
+failure.
+
+After successful invalidation, a snapshot, verification, rendering, or
+verification-publication failure leaves both outputs absent. Report publication
+failure after successful verification publication leaves fresh verification and
+no report; there is no rollback. A report surviving without current canonical
+verification is historical/orphaned output, not a current report, and file
+existence alone does not prove that the latest invocation succeeded. The writes
+remain atomic sibling-temporary single-file writes, not a two-file transaction.
+Concurrent write-intending operations on the same bundle are outside the pair
+consistency guarantee and must be serialized externally.
 
 ## Assurance boundary
 
@@ -260,12 +289,13 @@ all pathnames physically coexisted at one instant. Producer authenticity,
 trusted execution, signing, attestation, independent replay, and scientific
 reproduction remain not established.
 
-The root check is not a filesystem transaction and does not claim protection
-against arbitrary high-frequency ABA between the final identity comparison and
-the atomic replace. Component-by-component ancestry locking, native Windows
-share-mode hardening, hostile multi-user filesystem resistance, producer
-authenticity, trusted execution, signing, attestation, replay, and scientific
-reproduction remain outside this stage.
+The root-bound mutation authority is not a filesystem transaction and does not
+claim protection against arbitrary high-frequency ABA, ancestor replacement,
+or hostile multi-user filesystem control. Component-by-component ancestry
+locking, native Windows ancestry locking beyond the selected lifecycle root,
+same-bundle concurrent writers, two-file transactions, power-loss durability,
+producer authenticity, trusted execution, signing, attestation, replay, and
+scientific reproduction remain outside this stage.
 
 H1 production implementation was candidate-closed by Stage 6.2e and was finally
 closed by the human-approved Stage 6.2f adversarial cross-platform acceptance.

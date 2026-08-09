@@ -72,6 +72,16 @@ def _replace_bundle_root(run_dir: Path, parked: Path) -> None:
     (run_dir / "replacement-root-b.txt").write_text("state B\n", encoding="utf-8")
 
 
+def _attempt_guarded_root_replacement(run_dir: Path, parked: Path) -> bool:
+    try:
+        _replace_bundle_root(run_dir, parked)
+    except PermissionError as exc:
+        if os.name != "nt" or getattr(exc, "winerror", None) != 32:
+            raise
+        return False
+    return True
+
+
 def _rewrite_large_regex_metric(run_dir: Path) -> bytes:
     # Exceeds the production 8 MiB spool threshold without millions of CSV rows.
     payload = b"x" * (8 * 1024 * 1024 + 257) + b"\nscore=3.0\n"
@@ -331,38 +341,65 @@ def test_root_replacement_never_writes_derived_output_into_state_b(
     tmp_path: Path,
     phase: str,
 ) -> None:
-    """B1/B2: derived writes fail closed if the named root becomes state B."""
+    """B1/B2: derived writes target A or Windows prevents installing B."""
 
     run_dir, _ = _make_bundle(tmp_path)
     parked = run_dir.with_name(f"{run_dir.name}-parked-{phase}")
+    replacements: list[bool] = []
 
     if phase == "verification":
         def replace_before_verification(session: Any, verification: Any) -> None:
-            _replace_bundle_root(run_dir, parked)
+            replacements.append(_attempt_guarded_root_replacement(run_dir, parked))
 
-        with pytest.raises(ConfigError, match="root identity differs"):
-            _verify_bundle_with_hooks(
+        if os.name == "nt":
+            result = _verify_bundle_with_hooks(
                 run_dir,
                 write=True,
                 _hooks=_VerifyBundleTestHooks(
                     before_verification_write=replace_before_verification
                 ),
             )
-        assert not (run_dir / "verification.json").exists()
+            assert replacements == [False]
+            assert read_json(run_dir / "verification.json") == result
+            assert not (run_dir / "report.md").exists()
+            assert not parked.exists()
+        else:
+            with pytest.raises(ConfigError, match="root identity differs"):
+                _verify_bundle_with_hooks(
+                    run_dir,
+                    write=True,
+                    _hooks=_VerifyBundleTestHooks(
+                        before_verification_write=replace_before_verification
+                    ),
+                )
+            assert replacements == [True]
+            assert not (run_dir / "verification.json").exists()
+            assert not (run_dir / "report.md").exists()
     else:
         def replace_before_report(session: Any, verification: Any, report: str) -> None:
-            _replace_bundle_root(run_dir, parked)
+            replacements.append(_attempt_guarded_root_replacement(run_dir, parked))
 
-        with pytest.raises(ConfigError, match="root identity differs"):
-            verify_and_report_bundle(
+        if os.name == "nt":
+            operation = verify_and_report_bundle(
                 run_dir,
                 _hooks=_VerifyReportTestHooks(before_report_write=replace_before_report),
             )
-        assert (parked / "verification.json").is_file()
-        assert not (run_dir / "report.md").exists()
-
-    assert not (run_dir / "verification.json").exists()
-    assert not (run_dir / "report.md").exists()
+            assert replacements == [False]
+            assert read_json(run_dir / "verification.json") == operation.verification
+            assert operation.report_path.is_file()
+            assert not parked.exists()
+        else:
+            with pytest.raises(ConfigError, match="root identity differs"):
+                verify_and_report_bundle(
+                    run_dir,
+                    _hooks=_VerifyReportTestHooks(
+                        before_report_write=replace_before_report
+                    ),
+                )
+            assert replacements == [True]
+            assert (parked / "verification.json").is_file()
+            assert not (run_dir / "verification.json").exists()
+            assert not (run_dir / "report.md").exists()
 
 
 def test_root_identity_unavailable_fails_closed_before_derived_write(

@@ -331,7 +331,7 @@ def test_recorded_failure_report_keeps_canonical_verification_complete(tmp_path:
     assert "Verification failed" not in report
 
 
-def test_r6_report_command_refreshes_stale_verification_after_tamper(
+def test_r6_report_failure_invalidates_historical_success_after_tamper(
     tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
     run_dir, _ = run_manifest(make_manifest(tmp_path / "project"))
@@ -343,10 +343,8 @@ def test_r6_report_command_refreshes_stale_verification_after_tamper(
     exit_code = cli_main(["report", str(run_dir)])
 
     captured = capsys.readouterr()
-    report = report_text(run_dir)
-    verification = read_json(run_dir / "verification.json")
     assert exit_code == 2
     assert "cannot establish schema-1 evidence snapshot" in captured.err
     assert "Traceback" not in captured.err
-    assert verification["verification_status"] == "complete"
-    assert "**Declared result:** `matched`" in report
+    assert not (run_dir / "verification.json").exists()
+    assert not (run_dir / "report.md").exists()

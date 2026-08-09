@@ -204,3 +204,25 @@ preflight is intentionally part of that established workflow. Reports are
 regenerated from a fresh verifier result and bind their displayed evidence root
 to that result. A null root is displayed as `NOT VERIFIED`, never as a valid
 digest.
+
+For a serialized write-intending refresh, historical `verification.json` and
+`report.md` are guard-invalidated before verification is attempted.
+`verification.json` is the primary canonical derived output and `report.md` is
+dependent presentation from the same refresh. Failure after invalidation can
+leave both absent; failure while publishing the report can leave fresh
+verification with no report. An orphan report is historical, and file existence
+alone is not evidence that the latest invocation succeeded. Read-only
+`verify_bundle(write=False)` does not mutate either file.
+
+These derived outputs remain outside the evidence index and evidence-root
+formula. The lifecycle guard retains an identity-checked mutation authority for
+the operation-start root across invalidation and publication. POSIX mutations
+are directory-descriptor-relative. Windows retains a directory handle without
+delete sharing so the selected root cannot be renamed or replaced while its
+canonical child paths are mutated. Temporary creation, atomic replacement, and
+cleanup remain bound to that same authority. This does not raise assurance,
+prove authenticity, or establish a filesystem transaction. Same-bundle
+write-intending invocations require external serialization. C5.1a does not add
+arbitrary high-frequency ABA protection, hostile-filesystem security,
+filesystem-wide atomic snapshots, native Windows ancestry locking, power-loss
+durability, signing, attestation, replay, or scientific reproduction guarantees.

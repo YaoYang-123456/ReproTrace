@@ -29,14 +29,19 @@ from .evidence import (
     resolve_bundle_file,
 )
 from .errors import ConfigError
-from .derived_outputs import write_session_derived_json
+from .derived_outputs import (
+    _DerivedOutputLifecycleTestHooks,
+    DerivedOutputLifecycleGuard,
+    begin_derived_output_refresh,
+    write_guarded_derived_json,
+    write_session_derived_json,
+)
 from .io import (
     read_json,
     read_source_record,
     sha256_file,
     utc_now,
     validate_source_record,
-    write_json_atomic,
 )
 from .manifest import redacted_environment, substitute, validate_manifest
 from .metrics import extract_metrics_from_snapshot, validate_metric_sources_record
@@ -1677,6 +1682,7 @@ SNAPSHOT_REPORT_RECORDS = {
 
 @dataclass(slots=True)
 class _VerifyBundleTestHooks:
+    lifecycle: _DerivedOutputLifecycleTestHooks | None = None
     after_snapshot_open: Callable[[VerificationSession], None] | None = None
     before_verification_write: (
         Callable[[VerificationSession, Mapping[str, Any]], None] | None
@@ -1846,22 +1852,40 @@ def _verify_bundle_with_hooks(
 ) -> dict[str, Any]:
     directory = Path(run_dir).expanduser().absolute()
     hooks = _hooks or _VerifyBundleTestHooks()
+    if not write:
+        return _verify_bundle_attempt(directory, hooks, lifecycle=None)
+    with begin_derived_output_refresh(directory, _hooks=hooks.lifecycle) as lifecycle:
+        result = _verify_bundle_attempt(directory, hooks, lifecycle=lifecycle)
+        lifecycle.require_current_root()
+        return result
+
+
+def _verify_bundle_attempt(
+    directory: Path,
+    hooks: _VerifyBundleTestHooks,
+    *,
+    lifecycle: DerivedOutputLifecycleGuard | None,
+) -> dict[str, Any]:
     session = _open_schema_one_snapshot_for_production(directory)
     if session is None:
+        if lifecycle is not None:
+            lifecycle.require_current_root()
         result, _ = _verify_legacy_directory(directory)
-        if write:
-            write_json_atomic(directory / "verification.json", result)
+        if lifecycle is not None:
+            write_guarded_derived_json(lifecycle, "verification.json", result)
         return result
     try:
+        if lifecycle is not None:
+            lifecycle.require_session_identity(session)
         if hooks.after_snapshot_open is not None:
             hooks.after_snapshot_open(session)
         result = verify_snapshot_session(session)
-        if write:
+        if lifecycle is not None:
             if hooks.before_verification_write is not None:
                 hooks.before_verification_write(session, result)
             write_session_derived_json(
                 session,
-                directory,
+                lifecycle,
                 "verification.json",
                 result,
             )
