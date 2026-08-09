@@ -2,7 +2,7 @@
 
 更新时间：2026-08-09
 
-状态基线：`main@57ba4d1802a587deeb1a852c2ea10b5a5437a6fe`
+生产语义基线：`57ba4d1802a587deeb1a852c2ea10b5a5437a6fe`（PR #4 的 parent；若后续提交仅修改文档，该 SHA 仍表示最新 production-bearing commit）
 
 本文只记录当前有效状态。阶段性过程、被后续修复取代的结论和独立审计来源见 [`audit-ledger.md`](audit-ledger.md)；更早的逐阶段细节保留在 Git 历史中。
 
@@ -104,10 +104,10 @@ GitHub Actions push run `31299206253` 针对合并后的 `main@57ba4d1802...`：
 
 ## 下一步
 
-当前没有自动继承的下一里程碑。下一轮应先在人类确认下选择其一：
+本次文档与状态账本整理已经由 PR #4 完成，不再列为后续候选。PR #4 合并后，下一轮只能在人类确认后选择：
 
 1. 小型 maintenance PR；
-2. 文档与状态账本整理；
-3. 新 research milestone 的设计阶段。
+2. 新 research milestone 的设计阶段；
+3. 暂停项目实施、保持当前状态。
 
 旧对话、旧草案和“后续候选”均不是批准记录。
