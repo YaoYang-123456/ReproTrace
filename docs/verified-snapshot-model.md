@@ -267,6 +267,6 @@ share-mode hardening, hostile multi-user filesystem resistance, producer
 authenticity, trusted execution, signing, attestation, replay, and scientific
 reproduction remain outside this stage.
 
-H1 production implementation is candidate-closed by Stage 6.2e. Final closure
-and merge authorization remain deferred to Stage 6.2f adversarial
-cross-platform acceptance.
+H1 production implementation was candidate-closed by Stage 6.2e and was finally
+closed by the human-approved Stage 6.2f adversarial cross-platform acceptance.
+C5.0 is accepted and merge authorization is granted.

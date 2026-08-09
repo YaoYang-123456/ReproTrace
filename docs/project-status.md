@@ -5,11 +5,15 @@
 ## C5.0 acceptance snapshots
 
 - 仓库：`https://github.com/YaoYang-123456/ReproTrace`
-- acceptance 分支：`codex/c5.0-assurance-verifier`
+- acceptance 分支：`codex/c5.0-snapshot-identity`
 - C5.0 基线：`main@0fc67da9bac302ec1d5c2f660b325d7225ee3067`
 - Stage 6 preflight commit：`53f34b85784794d4c9ba4e7235b0a2d701acbc36`
 - Stage 6.1 audit-fix branch：`codex/c5.0-audit-fixes`
 - Stage 6.1 authoritative base：`921943155f04da7839a43837b8961bdc5b5f1dc0`
+- Stage 6.2f accepted pre-closure HEAD：`d8836ae0076274b12d81be2d6ea3324d8ea5ffcc`
+- Stage 6.2f accepted Actions run：`31269321204`
+- 最终状态：`Stage 6.2f FINAL PASS`；`H1/H2/H3 CLOSED`；`C5.0 ACCEPTED`；
+  `Merge authorization GRANTED — READY TO MERGE`
 - snapshot 日期：2026-08-08
 - Stage 6 开始时工作树：干净
 
@@ -350,9 +354,8 @@ outputs 未进入 index。真实 tiny dry-run 为 `.reprotrace/runs/20260808T154
 `bundle_integrity_checked`、`not_run`、`not_evaluated`，verify/report 前后 root 均为
 `dfaf610552d0fac0fb9852f39224322e7dc01d028f4f5b540c5f1cf1cee892e0`。
 
-H1 production implementation 在 Stage 6.2e 达到 candidate-closed；最终 closure 与 merge 授权
-仍等待 Stage 6.2f adversarial cross-platform acceptance。跨平台最终结论须等待本提交的 GitHub
-Actions Ubuntu 3.10/3.12、Windows 3.12 与 macOS 3.12 人工 gate。
+H1 production implementation 在 Stage 6.2e 达到 candidate-closed；Stage 6.2f 随后完成
+adversarial cross-platform acceptance，并由人工 gate 确认最终 closure 与 merge 授权。
 
 ## C5.0 Stage 6.2f final adversarial acceptance
 
@@ -381,9 +384,12 @@ not_evaluated`，index/root 均为
 `68026940a2ce90a98ea5117555aa294d3b452f68af8260132b7695fe326cf318`。两个 bundle 的 derived
 outputs 均未进入 index；未使用 GPU、PEFT-ViT、训练或网络。
 
-完整结果与原始独立审计 fixture 映射见 `docs/c5-stage-6.2f-final-acceptance.md`。当前只能声明
-`STAGE 6.2f LOCAL PASS`；H1 final closure、C5.0 acceptance 与 merge authorization 仍等待本阶段
-commit 的 Ubuntu 3.10/3.12、Windows 3.12、macOS 3.12 GitHub Actions 和人工 gate。
+完整结果与原始独立审计 fixture 映射见 `docs/c5-stage-6.2f-final-acceptance.md`。最终人工批准状态为
+`STAGE 6.2f FINAL PASS`、`H1 CLOSED`、`H2 CLOSED`、`H3 CLOSED`、`C5.0 ACCEPTED`，merge
+authorization 已 `GRANTED — READY TO MERGE`。该结论以文档关闭前的 accepted HEAD
+`d8836ae0076274b12d81be2d6ea3324d8ea5ffcc` 和 GitHub Actions run `31269321204` 为依据；
+Ubuntu 3.10、Ubuntu 3.12、Windows 3.12、macOS 3.12 四个 job 均完成 pytest 并通过。各平台因
+文件系统能力不同而可能执行不同 skip 集合，不将某平台跳过的 mutation 描述为已在该平台执行。
 
 第一次 Stage 6.2f acceptance commit
 `d7a4cd4edafa0d2702e1d2707af10f53d0da9315` 的本地 gate 通过，但 GitHub Actions run
@@ -397,7 +403,16 @@ test body、fixture mutation、assertion、skip condition 或 adversarial sequen
 仍只以 `src` 为根，从仓库外的 editable install 无法发现 `tests`。修复后直接 `pytest` 与
 `python -m pytest` 的 final suite 均为 `52 passed, 1 skipped`，无 `PYTHONPATH` 的独立 import
 通过；两种入口的完整套件及 cp1252 完整套件均为 `390 passed, 10 skipped`。H1 final closure
-仍等待新 repair commit 的四平台 CI 与人工 gate。
+随后由 repair commit `d8836ae0076274b12d81be2d6ea3324d8ea5ffcc` 的四平台 Actions run
+`31269321204` 与人工 gate 正式关闭。
+
+C5.0 在既定 threat model 内建立：一个 index-bound logical evidence byte snapshot、handle-bound
+evidence acquisition、snapshot-backed semantic verification、snapshot-backed metric derivation、
+same-session report rendering、root-identity-bound derived-output writes，以及 command/artifact
+semantic closure。它不建立 malicious producer authenticity、trusted execution、signature 或
+attestation、filesystem-atomic whole-directory snapshot、任意高频 ABA 防护、hostile multi-user
+filesystem security、native Windows `CreateFileW` ancestry/share locking、independent replay 或
+scientific reproduction。
 
 ## C4 source evidence
 

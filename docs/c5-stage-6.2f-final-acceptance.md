@@ -4,13 +4,19 @@
 
 - Authoritative production base: `d189e470f522ea4b4fd14a95777f3a98be3e3ef1`.
 - Acceptance test commit: `d7a4cd4edafa0d2702e1d2707af10f53d0da9315`.
-- First attempt: local **PASS**, CI **FAIL** before test execution because the
+- Portability-repair and accepted pre-closure HEAD:
+  `d8836ae0076274b12d81be2d6ea3324d8ea5ffcc`.
+- First attempt: local **PASS**, cross-platform gate **INVALID** before test
+  execution because the
   acceptance module depended on an implicit `tests` namespace-package import.
 - Portability-repair rerun: local **PASS** on Windows 3.13.9, including direct
   `pytest`, `python -m pytest`, and cp1252 full-suite runs.
-- Cross-platform rerun gate: **pending** new GitHub Actions and human review.
-- H1 final closure: pending the cross-platform gate.
-- Merge authorization: withheld. This stage did not merge or create a pull request.
+- Cross-platform rerun: **FINAL PASS** in
+  [GitHub Actions run 31269321204](https://github.com/YaoYang-123456/ReproTrace/actions/runs/31269321204).
+- Final finding state: **H1 CLOSED**, **H2 CLOSED**, **H3 CLOSED**.
+- C5.0 final acceptance: **ACCEPTED**.
+- Merge authorization: **GRANTED — READY TO MERGE**. This documentation closure
+  does not itself merge the branch.
 - Production source freeze: no file under `src/reprotrace/` changed.
 
 This is an acceptance result for one logical indexed-byte snapshot. It is not an
@@ -33,6 +39,16 @@ the structured identity captured by the session. The evidence root remains
 The model does not promise an atomic directory transaction, hostile multi-user
 filesystem protection, arbitrary high-frequency ABA protection, native Windows
 `CreateFileW` ancestry/share locking, producer authenticity, signing, replay, or
+scientific reproduction.
+
+Within that boundary, C5.0 establishes one index-bound logical evidence byte
+snapshot, handle-bound evidence acquisition, snapshot-backed semantic
+verification and metric derivation, same-session report rendering,
+root-identity-bound derived-output writes, and command/artifact semantic closure.
+It does not establish malicious-producer authenticity, trusted execution,
+signatures or attestation, a filesystem-atomic whole-directory snapshot,
+arbitrary high-frequency ABA resistance, hostile multi-user filesystem security,
+native Windows `CreateFileW` ancestry/share locking, independent replay, or
 scientific reproduction.
 
 ## H1 snapshot-identity result
@@ -246,20 +262,22 @@ parent components), two Windows opened-file rename-sharing cases, and one
 POSIX-parent-symlink case whose Windows junction equivalent ran. Real Windows
 junction and root-replacement tests were not skipped.
 
-Ubuntu 3.10/3.12 and macOS 3.12 must execute the applicable real POSIX final and
-parent symlink, rename/replacement, root replacement, and large-spool cases in
-GitHub Actions. A skipped mutation will not be described as tested.
+Ubuntu 3.10/3.12 and macOS 3.12 executed the applicable real POSIX final and
+parent symlink, rename/replacement, root-replacement, and large-spool cases in
+the accepted GitHub Actions rerun. Platform capability differences mean the four
+jobs did not execute identical skip sets; no skipped mutation is described as
+tested on a platform where it did not run.
 
 ## CI and final recommendation
 
-The authoritative Stage 6.2e base CI is green on Ubuntu 3.10, Ubuntu 3.12,
-Windows 3.12, and macOS 3.12. The first Stage 6.2f acceptance commit
+The first Stage 6.2f acceptance commit
 `d7a4cd4edafa0d2702e1d2707af10f53d0da9315` passed locally but failed in
 [GitHub Actions run 31268142340](https://github.com/YaoYang-123456/ReproTrace/actions/runs/31268142340).
 Ubuntu 3.12 reported `ModuleNotFoundError: No module named 'tests'` while
 collecting the final acceptance module; macOS 3.12 also failed during pytest
 collection, and fail-fast cancelled Windows 3.12 and Ubuntu 3.10. No adversarial
-case executed in that failed cross-platform gate.
+case executed in that failed cross-platform gate, so the first attempt was an
+invalid cross-platform gate rather than an adversarial acceptance result.
 
 The test-portability repair adds only an empty `tests/__init__.py`, making the
 existing cross-test helper imports explicit. The final adversarial test file is
@@ -272,9 +290,12 @@ Before repair, direct `pytest` reproduced the collection error locally while
 `python -m pytest` and a repository-root Python import happened to resolve the
 implicit namespace. After repair, both final-suite entry forms returned
 `52 passed, 1 skipped`, a clean subprocess import succeeded without `PYTHONPATH`,
-and all three complete suites returned `390 passed, 10 skipped`. A new
-cross-platform Actions run is still pending the repair commit and push.
+and all three complete suites returned `390 passed, 10 skipped`.
 
-Local recommendation: retain `H1 final closure pending cross-platform gate` and
-withhold merge authorization until the repaired Stage 6.2f GitHub Actions matrix
-is green and a human confirms the test-only repair commit.
+Repair commit `d8836ae0076274b12d81be2d6ea3324d8ea5ffcc` was then evaluated by
+[GitHub Actions run 31269321204](https://github.com/YaoYang-123456/ReproTrace/actions/runs/31269321204).
+All four jobs completed pytest successfully: Ubuntu 3.10 **PASS**, Ubuntu 3.12
+**PASS**, Windows 3.12 **PASS**, and macOS 3.12 **PASS**. Human review accepted
+this repaired rerun as the final cross-platform gate. Stage 6.2f is therefore
+**FINAL PASS**; H1, H2, and H3 are **CLOSED**; C5.0 is **ACCEPTED**; and merge
+authorization is **GRANTED — READY TO MERGE**.
