@@ -596,7 +596,7 @@ def test_combined_publication_never_mutates_replacement_root(
         _assert_replacement_root_untouched(run_dir)
         assert read_json(parked / "verification.json")["verification_status"] == "complete"
         assert (parked / "report.md").read_text(encoding="utf-8").startswith(
-            "# ReproTrace Evidence Report"
+            "# ReproTrace report: snapshot-verifier"
         )
         _assert_no_derived_temporary_files(parked)
 
