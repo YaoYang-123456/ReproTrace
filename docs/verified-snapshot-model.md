@@ -247,12 +247,23 @@ the same refresh. A final symlink is unlinked without following its target;
 directories, junctions/reparse-like objects, and unsupported special objects
 fail closed.
 
-The lifecycle identity is checked before and after mutation. For schema 1 it
-must also exactly match the session-captured root identity before publication,
-and the existing session-bound writers retain their per-write root checks.
-Schema 0 uses the same mutation guard without gaining snapshot assurance.
-`verify_bundle(write=False)` acquires no lifecycle mutation authority and leaves
-both canonical files unchanged on success or failure.
+The lifecycle first captures the named operation-start root identity, then opens
+and identity-checks a mutation authority for that same root. POSIX retains a
+directory descriptor and performs canonical inspection, unlink, exclusive
+sibling-temporary creation, atomic replacement, and cleanup relative to it.
+Windows retains a directory handle opened without delete sharing; this prevents
+the selected lifecycle root from being renamed or replaced while equivalent
+child operations use the protected resolved root path. The authority remains
+open through the final publication and is released on every exit path.
+
+Named-root checks still run at lifecycle boundaries and before and after
+publication. They determine whether the invocation can continue or be reported
+as current, while the retained authority determines which root is physically
+mutated. For schema 1, the authority identity must also exactly match the
+session-captured root identity. Schema 0 uses the same mutation authority without
+gaining snapshot assurance. `verify_bundle(write=False)` acquires no lifecycle
+mutation authority and leaves both canonical files unchanged on success or
+failure.
 
 After successful invalidation, a snapshot, verification, rendering, or
 verification-publication failure leaves both outputs absent. Report publication
@@ -278,12 +289,13 @@ all pathnames physically coexisted at one instant. Producer authenticity,
 trusted execution, signing, attestation, independent replay, and scientific
 reproduction remain not established.
 
-The root check is not a filesystem transaction and does not claim protection
-against arbitrary high-frequency ABA between the final identity comparison and
-the atomic replace. Component-by-component ancestry locking, native Windows
-share-mode hardening, hostile multi-user filesystem resistance, producer
-authenticity, trusted execution, signing, attestation, replay, and scientific
-reproduction remain outside this stage.
+The root-bound mutation authority is not a filesystem transaction and does not
+claim protection against arbitrary high-frequency ABA, ancestor replacement,
+or hostile multi-user filesystem control. Component-by-component ancestry
+locking, native Windows ancestry locking beyond the selected lifecycle root,
+same-bundle concurrent writers, two-file transactions, power-loss durability,
+producer authenticity, trusted execution, signing, attestation, replay, and
+scientific reproduction remain outside this stage.
 
 H1 production implementation was candidate-closed by Stage 6.2e and was finally
 closed by the human-approved Stage 6.2f adversarial cross-platform acceptance.

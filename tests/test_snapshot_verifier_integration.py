@@ -482,43 +482,73 @@ def test_standalone_verify_bundle_write_true_uses_atomic_safe_output(tmp_path: P
     assert read_json(run_dir / "verification.json") == result
 
 
-def _replace_bundle_root(run_dir: Path, parked: Path) -> None:
-    run_dir.replace(parked)
+def _replace_bundle_root(run_dir: Path, parked: Path) -> bool:
+    try:
+        run_dir.replace(parked)
+    except PermissionError as exc:
+        if os.name != "nt" or getattr(exc, "winerror", None) != 32:
+            raise
+        return False
     run_dir.mkdir()
+    return True
 
 
 def test_root_replacement_before_verification_write_fails_closed(tmp_path: Path) -> None:
     run_dir, _ = make_bundle(tmp_path)
     parked = run_dir.with_name(run_dir.name + "-parked-verification")
+    replacements: list[bool] = []
 
     def replace(session: Any, verification: Any) -> None:
-        _replace_bundle_root(run_dir, parked)
+        replacements.append(_replace_bundle_root(run_dir, parked))
 
-    with pytest.raises(ConfigError, match="root identity differs"):
-        _verify_bundle_with_hooks(
+    if os.name == "nt":
+        result = _verify_bundle_with_hooks(
             run_dir,
             write=True,
             _hooks=_VerifyBundleTestHooks(before_verification_write=replace),
         )
+        assert replacements == [False]
+        assert read_json(run_dir / "verification.json") == result
+        assert not parked.exists()
+    else:
+        with pytest.raises(ConfigError, match="root identity differs"):
+            _verify_bundle_with_hooks(
+                run_dir,
+                write=True,
+                _hooks=_VerifyBundleTestHooks(before_verification_write=replace),
+            )
+        assert replacements == [True]
+        assert not (run_dir / "verification.json").exists()
 
-    assert not (run_dir / "verification.json").exists()
 
 
 def test_root_replacement_before_report_write_fails_closed(tmp_path: Path) -> None:
     run_dir, _ = make_bundle(tmp_path)
     parked = run_dir.with_name(run_dir.name + "-parked-report")
+    replacements: list[bool] = []
 
     def replace(session: Any, verification: Any, report: str) -> None:
-        _replace_bundle_root(run_dir, parked)
+        replacements.append(_replace_bundle_root(run_dir, parked))
 
-    with pytest.raises(ConfigError, match="root identity differs"):
-        verify_and_report_bundle(
+    if os.name == "nt":
+        operation = verify_and_report_bundle(
             run_dir,
             _hooks=_VerifyReportTestHooks(before_report_write=replace),
         )
+        assert replacements == [False]
+        assert read_json(run_dir / "verification.json") == operation.verification
+        assert operation.report_path.is_file()
+        assert not parked.exists()
+    else:
+        with pytest.raises(ConfigError, match="root identity differs"):
+            verify_and_report_bundle(
+                run_dir,
+                _hooks=_VerifyReportTestHooks(before_report_write=replace),
+            )
+        assert replacements == [True]
+        assert not (run_dir / "report.md").exists()
+        assert (parked / "verification.json").is_file()
 
-    assert not (run_dir / "report.md").exists()
-    assert (parked / "verification.json").is_file()
 
 
 def test_root_identity_unavailable_before_derived_write_fails_closed(

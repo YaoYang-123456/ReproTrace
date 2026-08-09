@@ -31,6 +31,7 @@ from .evidence import (
 from .errors import ConfigError
 from .derived_outputs import (
     _DerivedOutputLifecycleTestHooks,
+    DerivedOutputLifecycleGuard,
     begin_derived_output_refresh,
     write_guarded_derived_json,
     write_session_derived_json,
@@ -1851,11 +1852,20 @@ def _verify_bundle_with_hooks(
 ) -> dict[str, Any]:
     directory = Path(run_dir).expanduser().absolute()
     hooks = _hooks or _VerifyBundleTestHooks()
-    lifecycle = (
-        begin_derived_output_refresh(directory, _hooks=hooks.lifecycle)
-        if write
-        else None
-    )
+    if not write:
+        return _verify_bundle_attempt(directory, hooks, lifecycle=None)
+    with begin_derived_output_refresh(directory, _hooks=hooks.lifecycle) as lifecycle:
+        result = _verify_bundle_attempt(directory, hooks, lifecycle=lifecycle)
+        lifecycle.require_current_root()
+        return result
+
+
+def _verify_bundle_attempt(
+    directory: Path,
+    hooks: _VerifyBundleTestHooks,
+    *,
+    lifecycle: DerivedOutputLifecycleGuard | None,
+) -> dict[str, Any]:
     session = _open_schema_one_snapshot_for_production(directory)
     if session is None:
         if lifecycle is not None:
@@ -1870,12 +1880,12 @@ def _verify_bundle_with_hooks(
         if hooks.after_snapshot_open is not None:
             hooks.after_snapshot_open(session)
         result = verify_snapshot_session(session)
-        if write:
+        if lifecycle is not None:
             if hooks.before_verification_write is not None:
                 hooks.before_verification_write(session, result)
             write_session_derived_json(
                 session,
-                directory,
+                lifecycle,
                 "verification.json",
                 result,
             )

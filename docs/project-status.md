@@ -424,6 +424,14 @@ derived record；`report.md` 是同次 refresh 的 dependent presentation。sche
 与 session root identity 完全一致；schema 0 使用相同 mutation guard，但 assurance 仍封顶为
 `recorded`、result 仍为 `not_evaluated`，且不产生 evidence root。
 
+C5.1a v2 将该 guard 收紧为绑定 operation-start root 的持久 mutation authority。POSIX 保留经
+`fstat` 与起始 identity 核对的 directory descriptor，并通过 `dir_fd` 完成 canonical inspection、
+unlink、exclusive sibling-temp 创建、atomic replace 与失败清理。Windows 保留以
+`FILE_LIST_DIRECTORY | FILE_READ_ATTRIBUTES` 打开且不授予 delete sharing 的 root directory
+handle；该 handle 存续期间，选定 bundle root 不能被 rename/replace，child mutation 继续指向受保护
+的 resolved root。authority 从 invalidation 前持续到最后一次 publication 后，并在成功、失败路径均
+关闭；named-root 与 schema-1 session identity 检查继续决定 invocation 是否仍可视为 current。
+
 成功 invalidation 后的早期失败会留下两个输出均 absent；verification 成功写入但 report 写入失败时，
 保留 fresh verification、report absent。没有 current canonical verification 的 orphan report 只能视为
 historical，文件存在本身不能证明最近一次 invocation 成功。`verify_bundle(write=False)` 不取得 mutation
@@ -432,8 +440,8 @@ evidence root 或 assurance semantics。
 
 该一致性语义只适用于同一 bundle 上 serialized 的 write-intending invocation；C5.1a 没有新增 lock、
 quarantine、sidecar、schema bump、两文件 transaction、directory fsync、任意高频 ABA 防护、hostile
-filesystem 安全、native Windows ancestry/share locking、签名、attestation、replay 或 authenticity
-保证。
+filesystem 安全、filesystem-wide atomic snapshot、超出选定 lifecycle root 的 native Windows
+ancestry locking、power-loss durability、签名、attestation、replay 或 authenticity 保证。
 
 实现基线为 `main@8746a00257528fce2d90faac07923f1c45e0bf6b`，工作分支为
 `codex/c5.1a-derived-output-lifecycle`。2026-08-08 本地 Windows 验证结果：lifecycle 专项
@@ -442,6 +450,15 @@ adversarial suite `52 passed, 1 skipped`；默认编码完整套件与 `python -
 （`encoding=cp1252`）完整套件均为 `413 passed, 12 skipped`。C5.1a 的两个 skip 是 POSIX-only
 final-symlink 与 FIFO 语义；Windows junction/reparse 与 opened-file sharing failure 均实际执行。
 其余 skip 均为既有的跨平台 capability 条件。未运行训练、GPU 或 PEFT-ViT。
+
+2026-08-09 C5.1a v2 本地 Windows 验证：精确 root-replacement / authority / writer-failure
+回归 `9 passed`；lifecycle 专项 `30 passed, 3 skipped`；verifier/report/CLI/schema-0 相关集合
+`152 passed, 3 skipped`；H1/H2/H3 final adversarial suite `52 passed, 1 skipped`；默认编码与
+`python -X utf8=0`（`encoding=cp1252`）完整套件均为 `420 passed, 13 skipped`。lifecycle 的
+3 个 Windows skip 分别为必须成功替换根目录的 POSIX session-binding 探针，以及 POSIX-only
+final-symlink、FIFO 语义；Windows root-handle replacement blocking、junction/reparse、opened-file
+sharing failure 均实际执行。`compileall` 与 `git diff --check` 通过；未修改 schema、evidence index、
+evidence-root 公式或 assurance semantics，未运行训练、GPU 或 PEFT-ViT。
 
 ## C4 source evidence
 

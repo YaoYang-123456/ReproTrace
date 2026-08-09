@@ -12,7 +12,10 @@ import reprotrace.derived_outputs as derived_outputs_module
 import reprotrace.operations as operations_module
 import reprotrace.verifier as verifier_module
 from reprotrace.cli import main as cli_main
-from reprotrace.derived_outputs import _DerivedOutputLifecycleTestHooks
+from reprotrace.derived_outputs import (
+    _DerivedOutputLifecycleTestHooks,
+    DerivedOutputLifecycleGuard,
+)
 from reprotrace.errors import ConfigError
 from reprotrace.io import read_json, write_json
 from reprotrace.operations import _VerifyReportTestHooks, verify_and_report_bundle
@@ -26,6 +29,8 @@ from tests.test_snapshot_verifier_integration import make_bundle, refresh_index
 
 
 CANONICAL_OUTPUTS = ("verification.json", "report.md")
+REPLACEMENT_VERIFICATION = b"replacement verification\n"
+REPLACEMENT_REPORT = b"replacement report\n"
 
 
 def _output_state(run_dir: Path) -> dict[str, tuple[bytes, int, int, int]]:
@@ -53,9 +58,32 @@ def _corrupt_indexed_metric_source(run_dir: Path) -> None:
 def _replace_bundle_root(run_dir: Path, parked: Path) -> None:
     run_dir.replace(parked)
     run_dir.mkdir()
-    (run_dir / "verification.json").write_bytes(b"replacement verification\n")
-    (run_dir / "report.md").write_bytes(b"replacement report\n")
+    (run_dir / "verification.json").write_bytes(REPLACEMENT_VERIFICATION)
+    (run_dir / "report.md").write_bytes(REPLACEMENT_REPORT)
     (run_dir / "replacement-root-b.txt").write_text("state B\n", encoding="utf-8")
+
+
+def _attempt_bundle_root_replacement(run_dir: Path, parked: Path) -> bool:
+    """Install B, or prove the retained Windows root handle blocked the rename."""
+
+    try:
+        _replace_bundle_root(run_dir, parked)
+    except PermissionError as exc:
+        if os.name != "nt" or getattr(exc, "winerror", None) != 32:
+            raise
+        return False
+    return True
+
+
+def _assert_replacement_root_untouched(run_dir: Path) -> None:
+    assert (run_dir / "verification.json").read_bytes() == REPLACEMENT_VERIFICATION
+    assert (run_dir / "report.md").read_bytes() == REPLACEMENT_REPORT
+    assert (run_dir / "replacement-root-b.txt").read_text(encoding="utf-8") == "state B\n"
+
+
+def _assert_no_derived_temporary_files(directory: Path) -> None:
+    assert not list(directory.glob(".verification.json.*.tmp"))
+    assert not list(directory.glob(".report.md.*.tmp"))
 
 
 @pytest.mark.parametrize("command", ["verify", "report"])
@@ -85,9 +113,21 @@ def test_verification_only_refresh_removes_historical_report(tmp_path: Path) -> 
     assert not (run_dir / "report.md").exists()
 
 
-def test_write_false_success_preserves_canonical_bytes_and_metadata(tmp_path: Path) -> None:
+def test_write_false_success_preserves_canonical_bytes_and_metadata(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     run_dir, _ = make_bundle(tmp_path)
     before = _output_state(run_dir)
+
+    def authority_forbidden(*args: Any, **kwargs: Any) -> Any:
+        raise AssertionError("write=False acquired mutation authority")
+
+    monkeypatch.setattr(
+        derived_outputs_module,
+        "_acquire_mutation_authority",
+        authority_forbidden,
+    )
 
     result = verify_bundle(run_dir, write=False)
 
@@ -95,10 +135,22 @@ def test_write_false_success_preserves_canonical_bytes_and_metadata(tmp_path: Pa
     assert _output_state(run_dir) == before
 
 
-def test_write_false_failure_preserves_canonical_bytes_and_metadata(tmp_path: Path) -> None:
+def test_write_false_failure_preserves_canonical_bytes_and_metadata(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     run_dir, _ = make_bundle(tmp_path)
     before = _output_state(run_dir)
     _corrupt_indexed_metric_source(run_dir)
+
+    def authority_forbidden(*args: Any, **kwargs: Any) -> Any:
+        raise AssertionError("write=False acquired mutation authority")
+
+    monkeypatch.setattr(
+        derived_outputs_module,
+        "_acquire_mutation_authority",
+        authority_forbidden,
+    )
 
     with pytest.raises(ConfigError, match="cannot establish schema-1 evidence snapshot"):
         verify_bundle(run_dir, write=False)
@@ -112,9 +164,13 @@ def test_root_replaced_after_guard_capture_is_untouched(
 ) -> None:
     run_dir, _ = make_bundle(tmp_path)
     parked = run_dir.with_name(run_dir.name + "-parked-before-invalidation")
+    replacement_results: list[bool] = []
 
     def replace(guard: Any) -> None:
-        _replace_bundle_root(run_dir, parked)
+        replaced = _attempt_bundle_root_replacement(run_dir, parked)
+        replacement_results.append(replaced)
+        if not replaced:
+            raise ConfigError("Windows root replacement blocked by lifecycle authority")
 
     def verification_forbidden(directory: Path) -> Any:
         raise AssertionError("verification continued after lifecycle root replacement")
@@ -128,13 +184,21 @@ def test_root_replaced_after_guard_capture_is_untouched(
         lifecycle=_DerivedOutputLifecycleTestHooks(after_guard_capture=replace)
     )
 
-    with pytest.raises(ConfigError, match="operation-start identity"):
+    expected_error = (
+        "Windows root replacement blocked" if os.name == "nt" else "operation-start identity"
+    )
+    with pytest.raises(ConfigError, match=expected_error):
         _verify_bundle_with_hooks(run_dir, write=True, _hooks=hooks)
 
-    assert (run_dir / "verification.json").read_bytes() == b"replacement verification\n"
-    assert (run_dir / "report.md").read_bytes() == b"replacement report\n"
-    assert (parked / "verification.json").is_file()
-    assert (parked / "report.md").is_file()
+    assert replacement_results == [os.name != "nt"]
+    if os.name == "nt":
+        assert not parked.exists()
+        assert (run_dir / "verification.json").is_file()
+        assert (run_dir / "report.md").is_file()
+    else:
+        _assert_replacement_root_untouched(run_dir)
+        assert (parked / "verification.json").is_file()
+        assert (parked / "report.md").is_file()
 
 
 def test_root_replaced_between_invalidation_steps_leaves_orphan_only_in_a(
@@ -143,10 +207,14 @@ def test_root_replaced_between_invalidation_steps_leaves_orphan_only_in_a(
 ) -> None:
     run_dir, _ = make_bundle(tmp_path)
     parked = run_dir.with_name(run_dir.name + "-parked-between-invalidation")
+    replacement_results: list[bool] = []
 
     def replace(guard: Any, relative_path: str) -> None:
         if relative_path == "verification.json":
-            _replace_bundle_root(run_dir, parked)
+            replaced = _attempt_bundle_root_replacement(run_dir, parked)
+            replacement_results.append(replaced)
+            if not replaced:
+                raise ConfigError("Windows root replacement blocked by lifecycle authority")
 
     def verification_forbidden(directory: Path) -> Any:
         raise AssertionError("verification continued after lifecycle root replacement")
@@ -160,13 +228,173 @@ def test_root_replaced_between_invalidation_steps_leaves_orphan_only_in_a(
         lifecycle=_DerivedOutputLifecycleTestHooks(after_output_invalidated=replace)
     )
 
-    with pytest.raises(ConfigError, match="operation-start identity"):
+    expected_error = (
+        "Windows root replacement blocked" if os.name == "nt" else "operation-start identity"
+    )
+    with pytest.raises(ConfigError, match=expected_error):
         _verify_bundle_with_hooks(run_dir, write=True, _hooks=hooks)
 
-    assert (run_dir / "verification.json").read_bytes() == b"replacement verification\n"
-    assert (run_dir / "report.md").read_bytes() == b"replacement report\n"
-    assert not (parked / "verification.json").exists()
+    assert replacement_results == [os.name != "nt"]
+    if os.name == "nt":
+        assert not parked.exists()
+        assert not (run_dir / "verification.json").exists()
+        assert (run_dir / "report.md").is_file()
+    else:
+        _assert_replacement_root_untouched(run_dir)
+        assert not (parked / "verification.json").exists()
+        assert (parked / "report.md").is_file()
+
+
+def test_authority_acquisition_rejects_root_replaced_after_identity_capture(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    run_dir, _ = make_bundle(tmp_path)
+    parked = run_dir.with_name(run_dir.name + "-parked-during-acquisition")
+
+    def replace(directory: Path, identity: BundleRootIdentity) -> None:
+        assert directory == run_dir
+        assert identity.file_identity.available
+        _replace_bundle_root(run_dir, parked)
+
+    def verification_forbidden(directory: Path) -> Any:
+        raise AssertionError("verification continued after authority acquisition race")
+
+    monkeypatch.setattr(
+        verifier_module,
+        "_open_schema_one_snapshot_for_production",
+        verification_forbidden,
+    )
+    hooks = _VerifyBundleTestHooks(
+        lifecycle=_DerivedOutputLifecycleTestHooks(after_identity_capture=replace)
+    )
+
+    with pytest.raises(ConfigError, match="opened root identity differs"):
+        _verify_bundle_with_hooks(run_dir, write=True, _hooks=hooks)
+
+    _assert_replacement_root_untouched(run_dir)
+    assert (parked / "verification.json").is_file()
     assert (parked / "report.md").is_file()
+    moved_b = run_dir.with_name(run_dir.name + "-replacement-after-acquisition-failure")
+    run_dir.replace(moved_b)
+    moved_b.replace(run_dir)
+
+
+def test_real_invalidation_unlink_never_mutates_replacement_root(
+    tmp_path: Path,
+) -> None:
+    run_dir, _ = make_bundle(tmp_path)
+    parked = run_dir.with_name(run_dir.name + "-parked-before-unlink")
+    replacement_results: list[bool] = []
+
+    def replace_before_unlink(
+        guard: DerivedOutputLifecycleGuard,
+        relative_path: str,
+    ) -> None:
+        if relative_path == "verification.json":
+            replacement_results.append(
+                _attempt_bundle_root_replacement(run_dir, parked)
+            )
+
+    hooks = _VerifyBundleTestHooks(
+        lifecycle=_DerivedOutputLifecycleTestHooks(
+            before_canonical_unlink=replace_before_unlink
+        )
+    )
+
+    if os.name == "nt":
+        result = _verify_bundle_with_hooks(run_dir, write=True, _hooks=hooks)
+        assert replacement_results == [False]
+        assert read_json(run_dir / "verification.json") == result
+        assert not (run_dir / "report.md").exists()
+        assert not parked.exists()
+    else:
+        with pytest.raises(ConfigError, match="operation-start identity"):
+            _verify_bundle_with_hooks(run_dir, write=True, _hooks=hooks)
+        assert replacement_results == [True]
+        _assert_replacement_root_untouched(run_dir)
+        assert not (parked / "verification.json").exists()
+        assert (parked / "report.md").is_file()
+
+
+def test_temporary_creation_never_targets_replacement_root(
+    tmp_path: Path,
+) -> None:
+    run_dir, _ = make_bundle(tmp_path)
+    parked = run_dir.with_name(run_dir.name + "-parked-before-temp-create")
+    replacement_results: list[bool] = []
+
+    def replace_before_temp_create(
+        guard: DerivedOutputLifecycleGuard,
+        relative_path: str,
+    ) -> None:
+        if relative_path == "verification.json":
+            replacement_results.append(
+                _attempt_bundle_root_replacement(run_dir, parked)
+            )
+
+    hooks = _VerifyBundleTestHooks(
+        lifecycle=_DerivedOutputLifecycleTestHooks(
+            before_temp_create=replace_before_temp_create
+        )
+    )
+
+    if os.name == "nt":
+        result = _verify_bundle_with_hooks(run_dir, write=True, _hooks=hooks)
+        assert replacement_results == [False]
+        assert read_json(run_dir / "verification.json") == result
+        assert not (run_dir / "report.md").exists()
+        assert not parked.exists()
+        _assert_no_derived_temporary_files(run_dir)
+    else:
+        with pytest.raises(ConfigError, match="operation-start identity"):
+            _verify_bundle_with_hooks(run_dir, write=True, _hooks=hooks)
+        assert replacement_results == [True]
+        _assert_replacement_root_untouched(run_dir)
+        assert not (parked / "verification.json").exists()
+        assert not (parked / "report.md").exists()
+        _assert_no_derived_temporary_files(parked)
+
+
+def test_verification_publication_never_mutates_replacement_root(
+    tmp_path: Path,
+) -> None:
+    run_dir, _ = make_bundle(tmp_path)
+    parked = run_dir.with_name(run_dir.name + "-parked-before-verification-replace")
+    replacement_results: list[bool] = []
+
+    def replace_before_publication(
+        guard: DerivedOutputLifecycleGuard,
+        temporary_name: str,
+        relative_path: str,
+    ) -> None:
+        assert temporary_name.startswith(".verification.json.")
+        if relative_path == "verification.json":
+            replacement_results.append(
+                _attempt_bundle_root_replacement(run_dir, parked)
+            )
+
+    hooks = _VerifyBundleTestHooks(
+        lifecycle=_DerivedOutputLifecycleTestHooks(
+            before_atomic_replace=replace_before_publication
+        )
+    )
+
+    if os.name == "nt":
+        result = _verify_bundle_with_hooks(run_dir, write=True, _hooks=hooks)
+        assert replacement_results == [False]
+        assert read_json(run_dir / "verification.json") == result
+        assert not (run_dir / "report.md").exists()
+        assert not parked.exists()
+        _assert_no_derived_temporary_files(run_dir)
+    else:
+        with pytest.raises(ConfigError, match="operation-start identity"):
+            _verify_bundle_with_hooks(run_dir, write=True, _hooks=hooks)
+        assert replacement_results == [True]
+        _assert_replacement_root_untouched(run_dir)
+        assert read_json(parked / "verification.json")["verification_status"] == "complete"
+        assert not (parked / "report.md").exists()
+        _assert_no_derived_temporary_files(parked)
 
 
 def test_unavailable_root_identity_fails_without_mutation(
@@ -218,6 +446,64 @@ def test_post_invalidation_failure_leaves_canonical_outputs_absent(tmp_path: Pat
     assert not (run_dir / "report.md").exists()
 
 
+def test_mutation_authority_is_released_after_success(tmp_path: Path) -> None:
+    run_dir, _ = make_bundle(tmp_path)
+    guards: list[DerivedOutputLifecycleGuard] = []
+    descriptors: list[int] = []
+
+    def record(guard: DerivedOutputLifecycleGuard) -> None:
+        guards.append(guard)
+        descriptors.append(guard.fileno())
+
+    hooks = _VerifyBundleTestHooks(
+        lifecycle=_DerivedOutputLifecycleTestHooks(after_guard_capture=record)
+    )
+
+    _verify_bundle_with_hooks(run_dir, write=True, _hooks=hooks)
+
+    assert len(guards) == 1
+    assert guards[0].closed
+    with pytest.raises(OSError):
+        os.fstat(descriptors[0])
+    moved = run_dir.with_name(run_dir.name + "-after-authority-close")
+    run_dir.replace(moved)
+    moved.replace(run_dir)
+    _assert_no_derived_temporary_files(run_dir)
+
+
+def test_mutation_authority_is_released_after_exception(tmp_path: Path) -> None:
+    run_dir, _ = make_bundle(tmp_path)
+    guards: list[DerivedOutputLifecycleGuard] = []
+    descriptors: list[int] = []
+
+    def fail(guard: DerivedOutputLifecycleGuard) -> None:
+        guards.append(guard)
+        descriptors.append(guard.fileno())
+        raise ConfigError("simulated lifecycle failure")
+
+    hooks = _VerifyBundleTestHooks(
+        lifecycle=_DerivedOutputLifecycleTestHooks(after_invalidation=fail)
+    )
+
+    with pytest.raises(ConfigError, match="simulated lifecycle failure"):
+        _verify_bundle_with_hooks(run_dir, write=True, _hooks=hooks)
+
+    assert len(guards) == 1
+    assert guards[0].closed
+    with pytest.raises(OSError):
+        os.fstat(descriptors[0])
+    moved = run_dir.with_name(run_dir.name + "-after-exception-close")
+    run_dir.replace(moved)
+    moved.replace(run_dir)
+    assert not (run_dir / "verification.json").exists()
+    assert not (run_dir / "report.md").exists()
+    _assert_no_derived_temporary_files(run_dir)
+
+
+@pytest.mark.skipif(
+    os.name == "nt",
+    reason="Windows lifecycle authority prevents the root replacement needed by this probe",
+)
 def test_session_root_must_match_lifecycle_root(
     tmp_path: Path,
 ) -> None:
@@ -271,6 +557,50 @@ def test_metric_derivation_failure_result_is_published(tmp_path: Path) -> None:
     assert operation.report_path.is_file()
 
 
+def test_combined_publication_never_mutates_replacement_root(
+    tmp_path: Path,
+) -> None:
+    run_dir, _ = make_bundle(tmp_path)
+    parked = run_dir.with_name(run_dir.name + "-parked-before-report-replace")
+    replacement_results: list[bool] = []
+
+    def replace_before_report(
+        guard: DerivedOutputLifecycleGuard,
+        temporary_name: str,
+        relative_path: str,
+    ) -> None:
+        if relative_path == "report.md":
+            assert temporary_name.startswith(".report.md.")
+            replacement_results.append(
+                _attempt_bundle_root_replacement(run_dir, parked)
+            )
+
+    hooks = _VerifyReportTestHooks(
+        lifecycle=_DerivedOutputLifecycleTestHooks(
+            before_atomic_replace=replace_before_report
+        )
+    )
+
+    if os.name == "nt":
+        operation = verify_and_report_bundle(run_dir, _hooks=hooks)
+        assert replacement_results == [False]
+        assert read_json(run_dir / "verification.json") == operation.verification
+        assert operation.report_path == run_dir / "report.md"
+        assert operation.report_path.is_file()
+        assert not parked.exists()
+        _assert_no_derived_temporary_files(run_dir)
+    else:
+        with pytest.raises(ConfigError, match="operation-start identity"):
+            verify_and_report_bundle(run_dir, _hooks=hooks)
+        assert replacement_results == [True]
+        _assert_replacement_root_untouched(run_dir)
+        assert read_json(parked / "verification.json")["verification_status"] == "complete"
+        assert (parked / "report.md").read_text(encoding="utf-8").startswith(
+            "# ReproTrace Evidence Report"
+        )
+        _assert_no_derived_temporary_files(parked)
+
+
 def test_report_render_failure_leaves_both_outputs_absent(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -309,22 +639,39 @@ def test_verification_write_failure_leaves_both_outputs_absent(
 
 def test_report_write_failure_keeps_fresh_verification_and_no_report(
     tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     run_dir, _ = make_bundle(tmp_path)
     published: list[dict[str, Any]] = []
+    original_replace = DerivedOutputLifecycleGuard._replace_temporary
 
-    def fail(session: Any, verification: Any, report: str) -> None:
+    def record(session: Any, verification: Any, report: str) -> None:
         published.append(dict(verification))
-        raise ConfigError("simulated report write failure")
 
-    with pytest.raises(ConfigError, match="report write failure"):
+    def fail_report_replace(
+        guard: DerivedOutputLifecycleGuard,
+        temporary_name: str,
+        relative_path: str,
+    ) -> None:
+        if relative_path == "report.md":
+            raise OSError("simulated report atomic replace failure")
+        original_replace(guard, temporary_name, relative_path)
+
+    monkeypatch.setattr(
+        DerivedOutputLifecycleGuard,
+        "_replace_temporary",
+        fail_report_replace,
+    )
+
+    with pytest.raises(ConfigError, match="report atomic replace failure"):
         verify_and_report_bundle(
             run_dir,
-            _hooks=_VerifyReportTestHooks(before_report_write=fail),
+            _hooks=_VerifyReportTestHooks(before_report_write=record),
         )
 
     assert read_json(run_dir / "verification.json") == published[0]
     assert not (run_dir / "report.md").exists()
+    _assert_no_derived_temporary_files(run_dir)
 
 
 def _convert_to_schema_zero(run_dir: Path) -> None:
@@ -346,6 +693,55 @@ def test_schema_zero_refresh_uses_lifecycle_without_assurance_upgrade(tmp_path: 
     assert operation.verification["evidence_root_sha256"] is None
     assert read_json(run_dir / "verification.json") == operation.verification
     assert operation.report_path.is_file()
+
+
+def test_schema_zero_publication_never_mutates_replacement_root(
+    tmp_path: Path,
+) -> None:
+    run_dir, _ = make_bundle(tmp_path, metrics=False)
+    _convert_to_schema_zero(run_dir)
+    parked = run_dir.with_name(run_dir.name + "-parked-schema-zero-report")
+    replacement_results: list[bool] = []
+
+    def replace_before_report(
+        guard: DerivedOutputLifecycleGuard,
+        temporary_name: str,
+        relative_path: str,
+    ) -> None:
+        if relative_path == "report.md":
+            assert temporary_name.startswith(".report.md.")
+            replacement_results.append(
+                _attempt_bundle_root_replacement(run_dir, parked)
+            )
+
+    hooks = _VerifyReportTestHooks(
+        lifecycle=_DerivedOutputLifecycleTestHooks(
+            before_atomic_replace=replace_before_report
+        )
+    )
+
+    if os.name == "nt":
+        operation = verify_and_report_bundle(run_dir, _hooks=hooks)
+        assert replacement_results == [False]
+        assert operation.legacy_bundle is True
+        assert operation.verification["assurance_level"] == "recorded"
+        assert operation.verification["result_status"] == "not_evaluated"
+        assert operation.verification["evidence_root_sha256"] is None
+        assert read_json(run_dir / "verification.json") == operation.verification
+        assert operation.report_path.is_file()
+        assert not parked.exists()
+        _assert_no_derived_temporary_files(run_dir)
+    else:
+        with pytest.raises(ConfigError, match="operation-start identity"):
+            verify_and_report_bundle(run_dir, _hooks=hooks)
+        assert replacement_results == [True]
+        _assert_replacement_root_untouched(run_dir)
+        verification = read_json(parked / "verification.json")
+        assert verification["assurance_level"] == "recorded"
+        assert verification["result_status"] == "not_evaluated"
+        assert verification["evidence_root_sha256"] is None
+        assert (parked / "report.md").is_file()
+        _assert_no_derived_temporary_files(parked)
 
 
 def test_schema_zero_failed_refresh_removes_historical_outputs(tmp_path: Path) -> None:

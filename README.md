@@ -73,11 +73,16 @@ callers. A serialized write-intending `verify` or `report` refresh first
 guard-invalidates the historical `verification.json` and `report.md`, in that
 order, before attempting verification. `verification.json` is the primary
 canonical derived record; `report.md` is dependent presentation from the same
-refresh. A failed attempt after invalidation may leave both absent, while a
-report publication failure may leave fresh verification with no report. A
-report without current canonical verification is historical, and file existence
-alone does not prove that the most recent invocation succeeded. Read-only
-`verify_bundle(write=False)` never modifies either output.
+refresh. The guard retains a mutation authority for the operation-start root:
+POSIX mutations use a pinned directory descriptor, while Windows retains a
+directory handle that prevents that root from being renamed or replaced during
+pathname-based child mutation. Temporary creation, atomic replacement, and
+failure cleanup use the same authority. A failed attempt after invalidation may
+leave both absent, while a report publication failure may leave fresh
+verification with no report. A report without current canonical verification is
+historical, and file existence alone does not prove that the most recent
+invocation succeeded. Read-only `verify_bundle(write=False)` never acquires the
+mutation authority or modifies either output.
 
 Verification and result evaluation are separate. A scientifically valid
 expectation miss can therefore show `verification: COMPLETE`, `checks: PASS`,

@@ -52,9 +52,14 @@ For a serialized write-intending invocation on one bundle, ReproTrace captures
 the bundle-root identity and invalidates `verification.json` followed by
 `report.md` before schema dispatch. The first file is the primary canonical
 derived record; the report is dependent presentation. Root identity is checked
-through invalidation and publication, and schema-1 publication is additionally
-bound to the verification session identity. Read-only verification never enters
-this mutation lifecycle.
+through invalidation and publication, and the physical mutations are bound to
+one identity-checked operation-start root authority. POSIX uses a retained
+directory descriptor and directory-relative inspection, unlink, temporary-file
+creation, replacement, and cleanup. Windows retains a root directory handle
+opened without delete sharing, which prevents the selected root from being
+renamed or replaced while child mutations use its protected resolved pathname.
+Schema-1 publication is additionally bound to the verification session identity.
+Read-only verification never enters this mutation lifecycle.
 
 Failures are intentionally fail-closed: after successful invalidation, an early
 failure leaves both files absent; if verification is published but report
@@ -62,7 +67,9 @@ publication fails, fresh verification remains and report is absent. A surviving
 report without current canonical verification is historical. Derived outputs
 remain unindexed and do not affect the evidence root. This is not a two-file
 transaction or a concurrency protocol; callers must serialize write-intending
-operations on the same bundle.
+operations on the same bundle. It does not claim arbitrary high-frequency ABA
+resistance, hostile multi-user filesystem security, filesystem-wide atomic
+snapshot behavior, native Windows ancestry locking, or power-loss durability.
 
 ## Schema-1 verification pipeline
 

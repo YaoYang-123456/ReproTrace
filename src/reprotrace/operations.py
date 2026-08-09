@@ -57,55 +57,57 @@ def verify_and_report_bundle(
 
     directory = Path(run_dir).expanduser().absolute()
     hooks = _hooks or _VerifyReportTestHooks()
-    lifecycle = begin_derived_output_refresh(directory, _hooks=hooks.lifecycle)
-    session = _open_schema_one_snapshot_for_production(directory)
-    if session is None:
-        lifecycle.require_current_root()
-        verification, evidence = _verify_legacy_directory(directory)
-        report_text = render_report(evidence, verification)
-        write_guarded_derived_json(lifecycle, "verification.json", verification)
-        report_path = write_guarded_derived_bytes(
-            lifecycle,
-            "report.md",
-            report_text.encode("utf-8"),
-        )
-        return BundleReportResult(
-            verification=verification,
-            report_path=report_path,
-            legacy_bundle=True,
-            dry_run=evidence["run"].get("dry_run") is True,
-        )
+    with begin_derived_output_refresh(directory, _hooks=hooks.lifecycle) as lifecycle:
+        session = _open_schema_one_snapshot_for_production(directory)
+        if session is None:
+            lifecycle.require_current_root()
+            verification, evidence = _verify_legacy_directory(directory)
+            report_text = render_report(evidence, verification)
+            write_guarded_derived_json(lifecycle, "verification.json", verification)
+            report_path = write_guarded_derived_bytes(
+                lifecycle,
+                "report.md",
+                report_text.encode("utf-8"),
+            )
+            lifecycle.require_current_root()
+            return BundleReportResult(
+                verification=verification,
+                report_path=report_path,
+                legacy_bundle=True,
+                dry_run=evidence["run"].get("dry_run") is True,
+            )
 
-    try:
-        lifecycle.require_session_identity(session)
-        if hooks.after_snapshot_open is not None:
-            hooks.after_snapshot_open(session)
-        verification = verify_snapshot_session(session)
-        if hooks.after_verification_before_report is not None:
-            hooks.after_verification_before_report(session, verification)
-        evidence = snapshot_report_records(session)
-        report_text = render_report(evidence, verification)
-        if hooks.before_verification_write is not None:
-            hooks.before_verification_write(session, verification)
-        write_session_derived_json(
-            session,
-            directory,
-            "verification.json",
-            verification,
-        )
-        if hooks.before_report_write is not None:
-            hooks.before_report_write(session, verification, report_text)
-        report_path = write_session_derived_bytes(
-            session,
-            directory,
-            "report.md",
-            report_text.encode("utf-8"),
-        )
-        return BundleReportResult(
-            verification=verification,
-            report_path=report_path,
-            legacy_bundle=False,
-            dry_run=evidence["run"].get("dry_run") is True,
-        )
-    finally:
-        session.close()
+        try:
+            lifecycle.require_session_identity(session)
+            if hooks.after_snapshot_open is not None:
+                hooks.after_snapshot_open(session)
+            verification = verify_snapshot_session(session)
+            if hooks.after_verification_before_report is not None:
+                hooks.after_verification_before_report(session, verification)
+            evidence = snapshot_report_records(session)
+            report_text = render_report(evidence, verification)
+            if hooks.before_verification_write is not None:
+                hooks.before_verification_write(session, verification)
+            write_session_derived_json(
+                session,
+                lifecycle,
+                "verification.json",
+                verification,
+            )
+            if hooks.before_report_write is not None:
+                hooks.before_report_write(session, verification, report_text)
+            report_path = write_session_derived_bytes(
+                session,
+                lifecycle,
+                "report.md",
+                report_text.encode("utf-8"),
+            )
+            lifecycle.require_current_root()
+            return BundleReportResult(
+                verification=verification,
+                report_path=report_path,
+                legacy_bundle=False,
+                dry_run=evidence["run"].get("dry_run") is True,
+            )
+        finally:
+            session.close()
