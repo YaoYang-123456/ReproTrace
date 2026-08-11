@@ -1,6 +1,6 @@
 # ReproTrace 项目状态
 
-更新时间：2026-08-09
+更新时间：2026-08-11
 
 生产语义基线：`57ba4d1802a587deeb1a852c2ea10b5a5437a6fe`（PR #4 的 parent；若后续提交仅修改文档，该 SHA 仍表示最新 production-bearing commit）
 
@@ -18,7 +18,22 @@
 | F1 — stale canonical derived outputs | `CLOSED` by C5.1a |
 | F-C5.1a-01 — mutation into replacement root | `CLOSED` by root-bound authority remediation |
 | 当前 merge blocker | 无 |
-| 下一里程碑 | 未决定，需人工批准 |
+| 当前阶段 | `VALUE GATE / ACTIVE` |
+| 外部真实工作流验证 | 尚未完成；pilot 正在开放征集 |
+| 当前重点 | 约 15 分钟的真实 ML 工作流 pilot；主要比较基线为 Git commit/SHA + manifest |
+
+## VALUE GATE / ACTIVE
+
+当前实现工作暂时冻结。此阶段不扩展功能或 assurance claim，而是验证现有工具在外部真实工作流中是否比 Git commit/SHA + manifest 基线提供足够的增量价值。外部验证尚未获得，不能从内部测试或既有审计推断 pilot 已成功。
+
+| 当前允许 | 当前冻结 |
+| --- | --- |
+| 维护 [`pilot.md`](pilot.md)、README pilot 入口和结构化反馈表单 | 生产代码、schema、CLI、依赖和工作流变更 |
+| 在公开或脱敏的短时 CPU ML 工作流上开展 pilot | PEFT-ViT 或其他长时间/GPU 训练 |
+| 收集设置时间、摩擦、发现、误报、漏报和基线比较证据 | maintenance backlog、research milestone 实现和 assurance 扩张 |
+| 根据真实反馈形成后续提案，待人工批准 | 把尚未获得的外部反馈写成 acceptance 或 scientific reproduction |
+
+价值闸门的主要问题是：与仅记录 Git commit/SHA 和 manifest 相比，ReproTrace 对 source、environment、inputs、commands、logs、artifacts、metrics 和 verification 的额外绑定，是否在真实工作流中发现了有用问题，且其设置与解释成本是否合理。当前不预设答案。
 
 ## 当前实现边界
 
@@ -104,10 +119,6 @@ GitHub Actions push run `31299206253` 针对合并后的 `main@57ba4d1802...`：
 
 ## 下一步
 
-本次文档与状态账本整理已经由 PR #4 完成，不再列为后续候选。PR #4 合并后，下一轮只能在人类确认后选择：
+当前已批准的下一步仅是开放并收集外部真实工作流 pilot，按 [`pilot.md`](pilot.md) 将 ReproTrace 与 Git commit/SHA + manifest 基线比较。pilot 结果必须作为尚待收集的证据处理；在形成可复核的真实用户证据并经人工决策前，不恢复实现、maintenance 或 research milestone 工作。
 
-1. 小型 maintenance PR；
-2. 新 research milestone 的设计阶段；
-3. 暂停项目实施、保持当前状态。
-
-旧对话、旧草案和“后续候选”均不是批准记录。
+旧对话、旧草案和“后续候选”均不是批准记录，pilot 邀请也不改变既有审计结论、生产语义基线或 assurance semantics。

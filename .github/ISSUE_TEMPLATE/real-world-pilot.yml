@@ -1,0 +1,133 @@
+name: Real-world ReproTrace pilot
+description: Share sanitized evidence from a short real-world ReproTrace trial.
+title: "[Pilot]: "
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thank you for testing ReproTrace on a real workflow. This form creates a public GitHub Issue.
+
+        Do not submit secrets, credentials, tokens, private or personal data, proprietary code, unreleased model details, confidential logs, or restricted datasets. Use public, synthetic, or sanitized descriptions. You do not need to attach a bundle.
+
+  - type: dropdown
+    id: participant_role
+    attributes:
+      label: Participant role
+      description: Choose the role closest to your work.
+      options:
+        - ML researcher
+        - ML engineer
+        - Reproducibility or research-infrastructure engineer
+        - Student
+        - Independent reviewer or auditor
+        - Other
+    validations:
+      required: true
+
+  - type: textarea
+    id: workflow_problem
+    attributes:
+      label: Workflow and original problem
+      description: Describe the public or sanitized workflow and the result-binding or stale-result problem you wanted to assess.
+      placeholder: A short CPU image-classification evaluation produced a CSV metric, and I needed to know which config and input snapshot the result belonged to.
+    validations:
+      required: true
+
+  - type: textarea
+    id: baseline_evidence
+    attributes:
+      label: Previous evidence-recording method
+      description: What did you retain before this pilot, including your Git commit/SHA + manifest baseline?
+      placeholder: Commit SHA, YAML config, environment export, manually named output folder, or another process.
+    validations:
+      required: true
+
+  - type: input
+    id: setup_minutes
+    attributes:
+      label: Setup and interpretation time
+      description: Give the approximate total minutes, optionally split into install, manifest adaptation, run, and interpretation.
+      placeholder: "14 minutes total: 3 install, 6 manifest, 2 run, 3 interpretation"
+    validations:
+      required: true
+
+  - type: textarea
+    id: setup_friction
+    attributes:
+      label: Setup friction
+      description: What was difficult, slow, surprising, or unclear?
+    validations:
+      required: true
+
+  - type: dropdown
+    id: binding_discovery
+    attributes:
+      label: Did ReproTrace find a stale result or evidence-binding problem?
+      options:
+        - Yes
+        - No
+        - Unsure
+        - Not tested
+    validations:
+      required: true
+
+  - type: textarea
+    id: binding_details
+    attributes:
+      label: Finding details
+      description: Describe what was or was not found and which ReproTrace evidence or check affected your conclusion.
+    validations:
+      required: true
+
+  - type: dropdown
+    id: incremental_value
+    attributes:
+      label: Value beyond Git commit/SHA + manifest
+      options:
+        - Clear additional value
+        - Some additional value
+        - No additional value
+        - Less useful than the baseline
+        - Unsure
+    validations:
+      required: true
+
+  - type: textarea
+    id: baseline_comparison
+    attributes:
+      label: Baseline comparison
+      description: What could you answer with ReproTrace that the Git commit/SHA + manifest baseline could not answer as easily, or vice versa?
+    validations:
+      required: true
+
+  - type: textarea
+    id: false_signals
+    attributes:
+      label: False positives, false negatives, or unclear behavior
+      description: Include any known issue ReproTrace missed, or write "None observed." Do not paste confidential logs.
+    validations:
+      required: true
+
+  - type: textarea
+    id: outcome
+    attributes:
+      label: Final outcome
+      description: Would you use ReproTrace again for this workflow? Why or why not?
+    validations:
+      required: true
+
+  - type: textarea
+    id: improvements
+    attributes:
+      label: Improvement suggestions
+      description: What smallest change would most improve the value or reduce the friction?
+    validations:
+      required: true
+
+  - type: checkboxes
+    id: public_safety
+    attributes:
+      label: Public-data confirmation
+      options:
+        - label: I reviewed this public Issue and did not include secrets, private or personal data, proprietary code, confidential logs, or restricted datasets.
+          required: true

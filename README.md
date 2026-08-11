@@ -1,9 +1,29 @@
 # ReproTrace
 
-ReproTrace is an evidence-first execution recorder for research reproduction.
-It does not claim that a successful process exit reproduces a paper. Instead,
-it connects the exact source, environment, inputs, commands, logs, artifacts,
-metrics, and tolerance decision in one inspectable evidence bundle.
+ReproTrace binds an ML result to an inspectable evidence bundle: the source
+state, environment, declared inputs, resolved command protocol, logs, artifacts,
+raw metric sources, derived metrics, and tolerance decision that belong to that
+result. This makes it easier to spot a result whose recorded evidence is stale,
+internally inconsistent, or bound to a different configuration than expected.
+
+For each run, ReproTrace records Git identity and local changes, installed
+packages, input and artifact fingerprints, argv-based commands and outcomes,
+redacted environment overrides, logs, and metric evidence. For current bundles,
+verification checks the indexed bundle-local bytes and manifest-bound
+declarations and, when coverage permits, re-extracts metrics from captured raw
+evidence. `diff` compares two bundles across source, environment, inputs,
+commands, artifacts, and metrics.
+
+These checks do **not** prove that the producer is authentic, that a recorded
+process really ran, that the experiment was independently replayed, or that a
+paper was scientifically reproduced. They also do not decide whether code or
+data outside the captured bundle has changed since the run.
+
+> **Try the 15-minute real-world pilot.** Use a public or sanitized ML workflow,
+> compare ReproTrace with your usual Git commit/SHA + manifest record, and tell
+> us whether the added evidence is useful. Start with the
+> [pilot guide](docs/pilot.md), then submit the
+> [structured public feedback form](https://github.com/YaoYang-123456/ReproTrace/issues/new?template=real-world-pilot.yml).
 
 The current `0.1.0` slice intentionally targets a small problem:
 
